@@ -105,6 +105,8 @@ struct SettingsSheet: View {
     @AppStorage(FrameRate.defaultsKey) private var targetFPS: Double = FrameRate.minimum
     @AppStorage(MIDIBridge.enabledKey) private var midiEnabled = false
     @AppStorage(MIDIBridge.clockKey) private var midiClock = false
+    @AppStorage(AlwaysOnTop.defaultsKey) private var alwaysOnTop = false
+    @AppStorage(KaraokeModel.copyOnMissKey) private var copyOnMiss = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -134,7 +136,7 @@ struct SettingsSheet: View {
             // after November 2024, so key and tempo come from GetSongBPM instead.
             // Their terms require this link to be visible in the app.
             VStack(alignment: .leading, spacing: 6) {
-                Text("Optional. Key and tempo are supplied by GetSongBPM — create a free API key and paste it below.")
+                Text("Key and tempo come from ReccoBeats first, which needs no key. GetSongBPM fills in what ReccoBeats is missing — add a free API key below to enable it.")
                     .font(.system(size: 12, design: .rounded))
                     .foregroundStyle(Theme.upcoming)
                     .fixedSize(horizontal: false, vertical: true)
@@ -147,6 +149,9 @@ struct SettingsSheet: View {
             labelled("GetSongBPM API key") {
                 TextField("", text: $songBPMKey)
             }
+
+            Toggle("Copy the track name when no key or tempo is found", isOn: $copyOnMiss)
+                .font(.system(size: 12, design: .rounded))
 
             Divider().overlay(Theme.hairline)
 
@@ -190,6 +195,9 @@ struct SettingsSheet: View {
             Text("Display")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
 
+            Toggle("Keep windows above other apps", isOn: $alwaysOnTop)
+                .font(.system(size: 12, design: .rounded))
+
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Frame rate")
@@ -201,21 +209,16 @@ struct SettingsSheet: View {
                         .foregroundStyle(.white)
                 }
 
-                if FrameRate.isAdjustable {
-                    Slider(value: $targetFPS,
-                           in: FrameRate.minimum...FrameRate.displayMaximum,
-                           step: 10)
-                    Text("This display supports up to \(Int(FrameRate.displayMaximum)) fps. Higher rates are smoother but cost more GPU.")
-                        .font(.system(size: 11, design: .rounded))
-                        .foregroundStyle(Theme.upcoming)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    // A 60 Hz panel has nothing to choose between.
-                    Text("This display runs at \(Int(FrameRate.displayMaximum)) fps, so there's nothing above 60 to unlock.")
-                        .font(.system(size: 11, design: .rounded))
-                        .foregroundStyle(Theme.upcoming)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Slider(value: $targetFPS,
+                       in: FrameRate.minimum...FrameRate.selectableMaximum,
+                       step: 10)
+
+                Text(FrameRate.displayMaximum >= targetFPS
+                     ? "This display runs at \(Int(FrameRate.displayMaximum)) fps."
+                     : "This display runs at \(Int(FrameRate.displayMaximum)) fps, so the extra frames only appear once a faster display is connected.")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(Theme.upcoming)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {

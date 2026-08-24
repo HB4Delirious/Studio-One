@@ -144,15 +144,45 @@ decision against the code signature.
 **Nothing happens when you pick a search result.** Playback via `play track` needs
 the Spotify app running and signed in.
 
+## Signing
+
+Builds are ad-hoc signed by default, which works but has one irritation: an
+ad-hoc signature is identified by `cdhash`, a hash of the compiled binary. Every
+rebuild produces a different hash, so macOS treats each build as a new
+application — the login keychain asks for a password every time, and automation
+permission can reset too.
+
+A self-signed certificate fixes it permanently. Once, in **Keychain Access**:
+
+1. Menu → **Certificate Assistant → Create a Certificate…**
+2. Name: **Spot-a-oke**
+3. Identity Type: **Self Signed Root**
+4. Certificate Type: **Code Signing**
+5. Create, then Done
+
+`build.sh` picks it up automatically by name — no flags needed. Override with
+`SPOTAOKE_SIGN_ID` if you'd rather call it something else, or use a real Apple
+Development identity if you have one.
+
+The first launch after switching still prompts once (it is, genuinely, a new
+identity). Choose **Always Allow**, and rebuilds stop asking from then on.
+
 ## Credits
 
 Timed lyrics come from [LRCLIB](https://lrclib.net).
 
-Key and tempo are **Powered by [GetSongBPM](https://getsongbpm.com)**. Spotify's
-own `audio-features` endpoint returns 403 for any app created after November
-2024, so it isn't a usable source. GetSongBPM's API is free and asks only for a
-visible link back to their site in return — that link appears in the app's
-Settings sheet, and above.
+Key and tempo come from two sources, tried in order. Spotify's own
+`audio-features` endpoint returns 403 for any app created after November 2024,
+so it isn't usable.
+
+1. [ReccoBeats](https://reccobeats.com) — keyed by Spotify track ID, so there's
+   no title matching to get wrong, and it needs no API key.
+2. **Powered by [GetSongBPM](https://getsongbpm.com)** — covers what ReccoBeats
+   is missing, matched on title and artist. Free, and asks only for a visible
+   link back to their site in return; that link appears in the app's Settings
+   sheet, and above.
+
+Either alone leaves gaps. Together they answered every track tested.
 
 ## One thing this deliberately doesn't do
 

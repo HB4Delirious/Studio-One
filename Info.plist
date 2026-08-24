@@ -5,17 +5,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>Karaoke</string>
+	<string>Spot-a-oke</string>
 	<key>CFBundleIconFile</key>
-	<string>Karaoke</string>
+	<string>Spot-a-oke</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.logan.SpotifyKaraoke</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Karaoke</string>
+	<string>Spot-a-oke</string>
 	<key>CFBundleDisplayName</key>
-	<string>Karaoke</string>
+	<string>Spot-a-oke</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -29,7 +29,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Karaoke reads the current track and playback position from Spotify to keep the lyrics in sync.</string>
+	<string>Spot-a-oke reads the current track and playback position from Spotify to keep the lyrics in sync.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

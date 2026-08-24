@@ -4,6 +4,10 @@ import Foundation
 struct TrackAnalysis: Equatable, Sendable {
     var key: String?
     var tempo: Double?
+    /// Set when the two sources disagree by roughly 2×, which means one of them
+    /// read the track at half or double time. That's the only tempo error big
+    /// enough to hear — quantisation is thousandths of a BPM by comparison.
+    var halfTimeSuspect: Bool = false
 
     var isEmpty: Bool { key == nil && tempo == nil }
 }
@@ -27,6 +31,54 @@ actor AnalysisProvider {
         let cacheKey = track.trackID
         if let hit = cache[cacheKey] { return hit }
 
+        // Both sources, concurrently. ReccoBeats is keyed by Spotify track ID so
+        // it's the more trustworthy match, but querying GetSongBPM too gives a
+        // second opinion to check the tempo against.
+        async let primary = reccoBeats(trackID: cacheKey)
+        async let secondary = getSongBPM(track)
+        let (recco, gsb) = await (primary, secondary)
+
+        guard var result = recco ?? gsb else { return nil }
+
+        if let a = recco?.tempo, let b = gsb?.tempo, a > 0, b > 0 {
+            let ratio = max(a, b) / min(a, b)
+            result.halfTimeSuspect = abs(ratio - 2) < 0.08
+        }
+
+        cache[cacheKey] = result
+        return result
+    }
+
+    func invalidate() { cache.removeAll() }
+
+    // MARK: - ReccoBeats
+
+    private static let pitchNames = ["C", "C♯", "D", "D♯", "E", "F",
+                                     "F♯", "G", "G♯", "A", "A♯", "B"]
+
+    private func reccoBeats(trackID: String) async -> TrackAnalysis? {
+        var components = URLComponents(string: "https://api.reccobeats.com/v1/audio-features")!
+        components.queryItems = [URLQueryItem(name: "ids", value: trackID)]
+
+        guard let url = components.url,
+              let object = await json(url),
+              let content = object["content"] as? [[String: Any]],
+              let record = content.first else { return nil }
+
+        var key: String?
+        // Pitch class 0–11 with a separate major/minor flag; -1 means unknown.
+        if let pitch = record["key"] as? Int, (0...11).contains(pitch) {
+            let minor = (record["mode"] as? Int) == 0
+            key = Self.pitchNames[pitch] + (minor ? "m" : "")
+        }
+
+        let analysis = TrackAnalysis(key: key, tempo: Self.number(record["tempo"]))
+        return analysis.isEmpty ? nil : analysis
+    }
+
+    // MARK: - GetSongBPM
+
+    private func getSongBPM(_ track: SpotifyTrack) async -> TrackAnalysis? {
         guard let apiKey = Credentials.read(.songBPM), !apiKey.isEmpty else { return nil }
 
         let title = LyricsProvider.normalizeTitle(track.name)
@@ -35,18 +87,12 @@ actor AnalysisProvider {
 
         guard let hit = await search(title: title, artist: artist, apiKey: apiKey) else { return nil }
 
-        // Some responses carry only an id; follow up for the detail record.
         var analysis = hit.analysis
         if analysis.isEmpty, let id = hit.id, let detail = await song(id: id, apiKey: apiKey) {
             analysis = detail
         }
-
-        guard !analysis.isEmpty else { return nil }
-        cache[cacheKey] = analysis
-        return analysis
+        return analysis.isEmpty ? nil : analysis
     }
-
-    func invalidate() { cache.removeAll() }
 
     // MARK: - Requests
 

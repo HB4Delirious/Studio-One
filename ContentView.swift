@@ -182,6 +182,7 @@ struct ControlsWindow: View {
     @AppStorage("lyricFontSize") private var fontSize: Double = 42
     @State private var showSearch = false
     @State private var showSettings = false
+    @State private var showManualEntry = false
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -230,6 +231,28 @@ struct ControlsWindow: View {
             }
         }
         .onAppear { model.start() }
+        .modifier(AlwaysOnTop())
+    }
+}
+
+/// Keeps a window above other apps while the preference is on.
+struct AlwaysOnTop: ViewModifier {
+    static let defaultsKey = "alwaysOnTop"
+
+    @AppStorage(AlwaysOnTop.defaultsKey) private var onTop = false
+    @State private var host = WindowHolder()
+
+    func body(content: Content) -> some View {
+        content
+            .background(WindowReader { window in
+                host.window = window
+                apply()
+            })
+            .onChange(of: onTop) { _, _ in apply() }
+    }
+
+    private func apply() {
+        host.window?.level = onTop ? .floating : .normal
     }
 }
 
@@ -435,6 +458,15 @@ private struct ControlBar: View {
     @EnvironmentObject private var model: KaraokeModel
     @Binding var fontSize: Double
     @Binding var showSearch: Bool
+    /// Manual entry asks one question at a time, in place, rather than opening
+    /// a window: letter, then accidental, then major/minor, then BPM.
+    private enum Step: Equatable { case idle, letter, accidental, quality, tempo }
+    @State private var step: Step = .idle
+    @State private var letter = "C"
+    @State private var accidental = ""
+    @State private var isMinor = false
+    @State private var bpmField = ""
+    @FocusState private var bpmFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -476,7 +508,6 @@ private struct ControlBar: View {
             transportGroup
             Spacer()
             musicalInfo
-            syncTrim
             fontStepper
         }
     }
@@ -493,9 +524,8 @@ private struct ControlBar: View {
                 fontStepper
             }
             HStack(spacing: 14) {
-                musicalInfo
                 Spacer()
-                syncTrim
+                musicalInfo
             }
         }
     }
@@ -526,26 +556,210 @@ private struct ControlBar: View {
         .foregroundStyle(.white)
     }
 
-    /// Key and tempo, hidden entirely when GetSongBPM has nothing for the track —
-    /// an empty readout is worse than no readout.
+    /// Key and tempo, editable in place, one question at a time.
     private var musicalInfo: some View {
-        let analysis = model.analysis
-        let key = analysis?.key
-        let tempo = analysis?.tempo
-
-        return HStack(spacing: 12) {
-            if let key {
-                labelledValue("KEY", key)
-            }
-            if let tempo, tempo > 0 {
-                labelledValue("BPM", String(format: "%.0f", tempo))
+        Group {
+            switch step {
+            case .idle:       readout
+            case .letter:     letterStep
+            case .accidental: accidentalStep
+            case .quality:    qualityStep
+            case .tempo:      tempoStep
             }
         }
-        // Fixed slot: key and tempo arrive a network round trip after the track
-        // changes, and letting the row resize twice per skip is the jump.
-        .frame(width: 132, alignment: .trailing)
+        .frame(width: 268, alignment: .trailing)
         .padding(.trailing, 4)
-        .animation(.easeInOut(duration: 0.25), value: analysis)
+        .animation(.easeInOut(duration: 0.18), value: step)
+        .animation(.easeInOut(duration: 0.25), value: model.publishedAnalysis)
+    }
+
+    /// Normal display, identical whether the values came from an API or by hand.
+    @ViewBuilder
+    private var readout: some View {
+        let analysis = model.publishedAnalysis
+        let suspect = analysis?.halfTimeSuspect == true
+
+        if analysis == nil {
+            Button {
+                beginEntry()
+            } label: {
+                Label("Set key / BPM", systemImage: "plus.circle")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Theme.upcoming)
+            .help("No source has key or tempo for this track — enter them by hand")
+        } else {
+            HStack(spacing: 10) {
+                // Always rendered, showing "—" when unset, so a field can never
+                // silently vanish from the bar once anything has been entered.
+                labelledValue("KEY", analysis?.key ?? "—")
+                    .foregroundStyle(model.manualKey != nil ? Theme.cue : .white)
+
+                HStack(spacing: 5) {
+                    labelledValue("BPM", Self.bpmText(analysis?.tempo))
+                        .foregroundStyle(model.manualTempo != nil ? Theme.cue : .white)
+
+                    if suspect {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.cue)
+                            .help("The two sources disagree by 2× — this may be half-time. Use ×2 or ÷2 to correct it.")
+                    }
+                }
+
+                HStack(spacing: 4) {
+                    tempoButton("÷2", to: model.tempoMultiplier / 2,
+                                active: model.tempoMultiplier < 1)
+                    tempoButton("×2", to: model.tempoMultiplier * 2,
+                                active: model.tempoMultiplier > 1)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { beginEntry() }
+            .help("Click to set the key and tempo by hand")
+        }
+    }
+
+    private static func bpmText(_ tempo: Double?) -> String {
+        guard let tempo, tempo > 0 else { return "—" }
+        return String(format: "%.0f", tempo)
+    }
+
+    // MARK: Entry steps
+
+    private var letterStep: some View {
+        HStack(spacing: 3) {
+            ForEach(["A", "B", "C", "D", "E", "F", "G"], id: \.self) { note in
+                chip(note) {
+                    letter = note
+                    step = .accidental
+                }
+            }
+            if model.hasManualValues {
+                chip("Auto", width: 38) {
+                    model.manualKey = nil
+                    model.manualTempo = nil
+                    step = .idle
+                }
+            }
+            cancelChip
+        }
+    }
+
+    private var accidentalStep: some View {
+        HStack(spacing: 4) {
+            stepLabel(letter)
+            // Natural is offered alongside sharp and flat: without it, plain C,
+            // D, E, F, G, A and B — the most common keys — are unreachable.
+            chip("♮", width: 34) { accidental = ""; step = .quality }
+            chip("♯", width: 34) { accidental = "♯"; step = .quality }
+            chip("♭", width: 34) { accidental = "♭"; step = .quality }
+            cancelChip
+        }
+    }
+
+    private var qualityStep: some View {
+        HStack(spacing: 4) {
+            stepLabel(letter + accidental)
+            chip("major", width: 54) { isMinor = false; step = .tempo }
+            chip("minor", width: 54) { isMinor = true; step = .tempo }
+            cancelChip
+        }
+    }
+
+    private var tempoStep: some View {
+        HStack(spacing: 5) {
+            stepLabel(letter + accidental + (isMinor ? "m" : ""))
+
+            Text("BPM")
+                .font(Theme.label)
+                .foregroundStyle(Theme.upcoming)
+
+            TextField("120", text: $bpmField)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .multilineTextAlignment(.trailing)
+                .frame(width: 42)
+                .focused($bpmFocused)
+                .onSubmit { commit() }
+
+            chip("Save", width: 46) { commit() }
+            cancelChip
+        }
+        .onAppear { bpmFocused = true }
+    }
+
+    // MARK: Entry plumbing
+
+    private func beginEntry() {
+        // Seed from whatever is showing, so an override starts from the current
+        // value rather than from scratch.
+        if let key = model.publishedAnalysis?.key, let first = key.first {
+            letter = String(first)
+            accidental = key.contains("♯") ? "♯" : (key.contains("♭") ? "♭" : "")
+            isMinor = key.hasSuffix("m")
+        }
+        if let tempo = model.publishedAnalysis?.tempo, tempo > 0 {
+            bpmField = String(format: "%.0f", tempo)
+        }
+        step = .letter
+    }
+
+    private func commit() {
+        model.manualKey = letter + accidental + (isMinor ? "m" : "")
+        let trimmed = bpmField.trimmingCharacters(in: .whitespaces)
+        model.manualTempo = trimmed.isEmpty ? nil : Double(trimmed)
+        bpmFocused = false
+        bpmField = ""
+        step = .idle
+    }
+
+    private var cancelChip: some View {
+        chip("✕", width: 24) {
+            bpmFocused = false
+            step = .idle
+        }
+    }
+
+    private func stepLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(Theme.cue)
+            .frame(minWidth: 26)
+    }
+
+    private func chip(_ label: String, width: CGFloat = 26,
+                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(width: width, height: 22)
+                .background(Color.white.opacity(0.13),
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func tempoButton(_ label: String, to multiplier: Double, active: Bool) -> some View {
+        Button {
+            model.tempoMultiplier = min(4, max(0.25, multiplier))
+        } label: {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(active ? Theme.backdrop : .white.opacity(0.75))
+                .frame(width: 32, height: 22)
+                .background(active ? Theme.cue : Color.white.opacity(0.10),
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(multiplier < 0.25 || multiplier > 4)
+        .help(model.tempoMultiplier == 1
+              ? "Halve or double the tempo sent to Logic"
+              : String(format: "Correction ×%.2g — click the other to undo", model.tempoMultiplier))
     }
 
     private func labelledValue(_ caption: String, _ value: String) -> some View {
@@ -556,34 +770,6 @@ private struct ControlBar: View {
             Text(value)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
-        }
-    }
-
-    private var syncTrim: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("SYNC")
-                    .font(Theme.label)
-                    .foregroundStyle(Theme.upcoming)
-                if model.automaticLatencyMilliseconds >= 1 {
-                    Text(String(format: "auto −%.0f", model.automaticLatencyMilliseconds))
-                        .font(.system(size: 9, weight: .medium, design: .rounded))
-                        .foregroundStyle(Theme.cue.opacity(0.8))
-                        .help("Output-device latency, measured and applied automatically.")
-                }
-            }
-
-            Slider(value: $model.offsetMilliseconds, in: -2000...2000, step: 25)
-                .frame(width: 160)
-
-            Text(model.offsetMilliseconds == 0
-                 ? "0 ms"
-                 : String(format: "%+.0f ms", model.offsetMilliseconds))
-                .font(Theme.timecode)
-                .foregroundStyle(model.offsetMilliseconds == 0 ? Theme.upcoming : Theme.cue)
-                .frame(width: 66, alignment: .trailing)
-                .onTapGesture { model.offsetMilliseconds = 0 }
-                .help("Click to reset. Saved per track.")
         }
     }
 

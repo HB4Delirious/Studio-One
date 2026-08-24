@@ -27,10 +27,17 @@ final class MIDIBridge {
     static let logicTempoMin = 5.0
     static let logicTempoMax = 990.0
 
-    static func tempoCCValue(for bpm: Double) -> UInt8 {
+    /// Fine half of the 14-bit tempo pair. MIDI convention puts the LSB 32
+    /// controllers above the MSB, so CC 22 pairs with CC 54.
+    static let tempoFineCC: UInt8 = 54
+
+    /// Tempo as a 14-bit value: 16,384 steps across Logic's 5–990 BPM range is
+    /// about 0.06 BPM, against 7.76 BPM for a plain 7-bit CC.
+    static func tempo14Bit(for bpm: Double) -> (msb: UInt8, lsb: UInt8) {
         let span = logicTempoMax - logicTempoMin
-        let scaled = ((bpm - logicTempoMin) / span * 127).rounded()
-        return UInt8(min(127, max(0, scaled)))
+        let scaled = ((bpm - logicTempoMin) / span * 16383).rounded()
+        let value = Int(min(16383, max(0, scaled)))
+        return (UInt8(value >> 7), UInt8(value & 0x7F))
     }
 
     /// Fixed identity for the virtual endpoint ("SPOK" as ASCII).
@@ -79,7 +86,10 @@ final class MIDIBridge {
         }
 
         if let tempo = analysis?.tempo, tempo > 0 {
-            send(cc: Self.tempoCC, value: Self.tempoCCValue(for: tempo))
+            // MSB first, then LSB — the order hosts expect for a 14-bit pair.
+            let parts = Self.tempo14Bit(for: tempo)
+            send(cc: Self.tempoCC, value: parts.msb)
+            send(cc: Self.tempoFineCC, value: parts.lsb)
         }
 
         setClock(bpm: analysis?.tempo)
@@ -113,11 +123,7 @@ final class MIDIBridge {
             }
         case .tempo:
             cc = Self.tempoCC
-            if let tempo = analysis?.tempo, tempo > 0 {
-                settled = Self.tempoCCValue(for: tempo)
-            } else {
-                settled = 64
-            }
+            settled = analysis?.tempo.map { Self.tempo14Bit(for: $0).msb } ?? 64
         }
 
         // A host in learn mode is waiting for a control to *move*. One lone
@@ -126,9 +132,17 @@ final class MIDIBridge {
         let sweep: [UInt8] = [0, 21, 42, 64, 85, 106, 127, settled]
         let endpoint = source
 
+        let fine: UInt8? = control == .tempo ? Self.tempoFineCC : nil
+        let settledFine = analysis?.tempo.map { Self.tempo14Bit(for: $0).lsb } ?? 0
+
         for (step, value) in sweep.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.04) {
                 Self.transmit([0xB0, cc, min(127, value)], from: endpoint)
+                // Send the fine half too, so a host learning tempo sees the pair.
+                if let fine {
+                    let lsb = value == settled ? settledFine : value
+                    Self.transmit([0xB0, fine, min(127, lsb)], from: endpoint)
+                }
             }
         }
     }

@@ -11,7 +11,11 @@ struct AmbientBackground: View {
     @AppStorage(FrameRate.defaultsKey) private var targetFPS: Double = FrameRate.minimum
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: FrameRate.interval(for: targetFPS),
+        // Capped at 30fps regardless of the lyric setting. These are slow drifting
+        // gradients over the whole window — the most fill-rate-hungry thing on
+        // screen — and redrawing them at 120 buys nothing the eye can see. The
+        // lyrics and the sweep still run at the full rate.
+        TimelineView(.animation(minimumInterval: max(1.0 / 30.0, FrameRate.interval(for: targetFPS)),
                                 paused: !model.isPlaying)) { timeline in
             let now = timeline.date.timeIntervalSinceReferenceDate
             let position = model.lyricPosition
@@ -59,11 +63,13 @@ struct AmbientBackground: View {
         context.blendMode = .plusLighter
 
         let span = min(w, h)
+        // Three fields rather than four: each is a full-window radial gradient
+        // composited additively, so the fourth cost as much as the rest and
+        // added little.
         let motion: [(speed: Double, radius: Double, phase: Double)] = [
             (0.11, 0.66, 0.0),
             (0.08, 0.54, 2.1),
-            (0.13, 0.74, 4.2),
-            (0.06, 0.44, 5.6)
+            (0.13, 0.74, 4.2)
         ]
 
         for (index, path) in motion.enumerated() {

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Karaoke.app.
+# Builds Spot-a-oke.app.
 #
 # Works with Command Line Tools alone, or with Xcode. The catch is SwiftUI's
 # @State, which is a macro in the macOS 27 SDK whose plugin ships only with
@@ -9,7 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-APP_NAME="Karaoke"
+APP_NAME="Spot-a-oke"
 BUNDLE_ID="com.logan.SpotifyKaraoke"
 DEPLOY_TARGET="14.0"
 OUT="${1:-./build}"
@@ -58,14 +58,29 @@ swiftc \
 
 echo "==> Bundling"
 cp Info.plist "$STAGE/Contents/Info.plist"
-if [[ -f Icon/Karaoke.icns ]]; then
-    cp Icon/Karaoke.icns "$STAGE/Contents/Resources/Karaoke.icns"
+if [[ -f Icon/Spot-a-oke.icns ]]; then
+    cp Icon/Spot-a-oke.icns "$STAGE/Contents/Resources/Spot-a-oke.icns"
 else
-    echo "    warning: Icon/Karaoke.icns missing — app will use the generic icon" >&2
+    echo "    warning: Icon/Spot-a-oke.icns missing — app will use the generic icon" >&2
 fi
 
-echo "==> Signing (ad-hoc, hardened runtime + Apple Events entitlement)"
-codesign --force --sign - \
+# A stable signing identity keeps macOS recognising each build as the same app.
+# An ad-hoc signature is identified by cdhash — a hash of the binary — so every
+# recompile looks like a different application, and the keychain asks for a
+# password again. A self-signed certificate makes the designated requirement
+# name the certificate instead, which survives rebuilds. See README.
+SIGN_ID="${SPOTAOKE_SIGN_ID:-Spot-a-oke}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$SIGN_ID\""; then
+    IDENTITY="$SIGN_ID"
+    echo "==> Signing as \"$SIGN_ID\" (stable identity, hardened runtime + Apple Events)"
+else
+    IDENTITY="-"
+    echo "==> Signing ad-hoc (hardened runtime + Apple Events entitlement)"
+    echo "    No \"$SIGN_ID\" certificate found — the keychain will prompt on every"
+    echo "    build until one exists. See README, \"Signing\"."
+fi
+
+codesign --force --sign "$IDENTITY" \
     --options runtime \
     --entitlements Karaoke.entitlements \
     --timestamp=none \

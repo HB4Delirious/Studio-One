@@ -11,19 +11,25 @@ enum FrameRate {
     static let defaultsKey = "targetFPS"
     static let minimum: Double = 60
 
-    /// What the current display can actually deliver. A 60 Hz panel reports 60,
-    /// ProMotion reports 120.
+    /// The best any attached display can deliver.
+    ///
+    /// Deliberately not `NSScreen.main`, which is the screen holding the *key*
+    /// window — with the lyrics on a 120 Hz TV and the controls focused on a
+    /// 60 Hz laptop, that reports 60 and the higher rate can never be chosen.
     static var displayMaximum: Double {
-        Double(NSScreen.main?.maximumFramesPerSecond ?? 60)
+        Double(NSScreen.screens.map(\.maximumFramesPerSecond).max() ?? 60)
     }
 
-    /// True when the display can do better than the 60fps floor, i.e. when
-    /// offering a choice is meaningful at all.
-    static var isAdjustable: Bool { displayMaximum > minimum }
+    /// Upper end of the slider. Always at least 120 so the choice exists before
+    /// a capable display is plugged in — asking for more than the panel can show
+    /// simply results in the panel's rate, it isn't an error.
+    static var selectableMaximum: Double { Swift.max(120, displayMaximum) }
 
-    /// Clamped so a stored preference can never exceed the panel or drop below 60.
+    /// Not clamped to the display. `minimumInterval` is a floor on redraw
+    /// spacing; the display link still decides the real rate, so requesting 120
+    /// on a 60 Hz screen just yields 60 — and yields 120 the moment a 120 Hz
+    /// screen is connected, with no settings change needed.
     static func interval(for requested: Double) -> Double {
-        let ceiling = max(minimum, displayMaximum)
-        return 1.0 / min(max(minimum, requested), ceiling)
+        1.0 / Swift.min(Swift.max(minimum, requested), 240)
     }
 }

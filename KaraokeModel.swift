@@ -26,6 +26,56 @@ final class KaraokeModel: ObservableObject {
     /// Colours lifted from the current cover art. Empty falls back to Theme.
     @Published private(set) var palette: [PaletteColor] = []
 
+    /// Halves or doubles the reported tempo. Sources sometimes read a track at
+    /// half time — the only tempo error large enough to hear — and this is the
+    /// correction. Saved per track, like the sync trim.
+    @Published var tempoMultiplier: Double = 1 {
+        didSet {
+            persistTempoMultiplier()
+            MIDIBridge.shared.publish(publishedAnalysis)
+        }
+    }
+
+    /// Key and tempo typed in by hand, for tracks no source has data for.
+    @Published var manualKey: String? { didSet { persistManual(); republish() } }
+    @Published var manualTempo: Double? { didSet { persistManual(); republish() } }
+
+    var hasManualValues: Bool { manualKey != nil || manualTempo != nil }
+
+    /// Analysis as it should be shown and transmitted. Hand-entered values win
+    /// outright; the ×2/÷2 correction only applies to what a source reported.
+    var publishedAnalysis: TrackAnalysis? {
+        var result = analysis ?? TrackAnalysis()
+
+        if let manualKey { result.key = manualKey }
+        if let manualTempo {
+            result.tempo = manualTempo
+        } else if let tempo = result.tempo {
+            result.tempo = tempo * tempoMultiplier
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    /// No source had key or tempo, so put the track on the clipboard — the next
+    /// step is searching for it by hand, and this saves retyping an artist like
+    /// "Zero 9:36". Skipped when values were entered manually, since those
+    /// already answer the question.
+    private func copyTitleIfUnknown(_ track: SpotifyTrack) {
+        let enabled = UserDefaults.standard.object(forKey: Self.copyOnMissKey) as? Bool ?? true
+        guard enabled, publishedAnalysis == nil else { return }
+
+        let text = "\(track.name) - \(track.artist)"
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(text, forType: .string)
+
+        status = "No key or tempo found — “\(text)” copied to the clipboard."
+    }
+
+    private func republish() {
+        MIDIBridge.shared.publish(publishedAnalysis)
+    }
+
     /// Output-device latency, measured and applied without user involvement.
     @Published private(set) var automaticLatencyMilliseconds: Double = 0
     @Published private(set) var connection: ConnectionState = .checking
@@ -63,6 +113,10 @@ final class KaraokeModel: ObservableObject {
 
     private let pollInterval: TimeInterval = 0.5
     private let offsetDefaultsKey = "trackOffsets"
+    private let tempoDefaultsKey = "trackTempoMultipliers"
+    private let manualKeyDefaultsKey = "trackManualKeys"
+    private let manualTempoDefaultsKey = "trackManualTempos"
+    static let copyOnMissKey = "copyTitleWhenUnknown"
 
     var isPlaying: Bool { playerState == .playing }
 
@@ -178,6 +232,7 @@ final class KaraokeModel: ObservableObject {
         lyricsTask?.cancel()
         analysisTask?.cancel()
         paletteTask?.cancel()
+        status = nil
         lines = []
         analysis = nil
         palette = []
@@ -203,11 +258,16 @@ final class KaraokeModel: ObservableObject {
             await MainActor.run {
                 guard let self, self.track?.uri == newTrack.uri else { return }
                 self.analysis = result
-                MIDIBridge.shared.publish(result)
+                MIDIBridge.shared.publish(self.publishedAnalysis)
+                self.copyTitleIfUnknown(newTrack)
             }
         }
 
         offsetMilliseconds = storedOffset(for: newTrack.trackID)
+        tempoMultiplier = storedTempoMultiplier(for: newTrack.trackID)
+        let manuals = storedManual(for: newTrack.trackID)
+        manualKey = manuals.key
+        manualTempo = manuals.tempo
         lyricsState = .loading
 
         lyricsTask = Task { [weak self] in
@@ -317,6 +377,40 @@ final class KaraokeModel: ObservableObject {
     private func storedOffset(for trackID: String) -> Double {
         let map = UserDefaults.standard.dictionary(forKey: offsetDefaultsKey) as? [String: Double] ?? [:]
         return map[trackID] ?? 0
+    }
+
+    private func storedTempoMultiplier(for trackID: String) -> Double {
+        let map = UserDefaults.standard.dictionary(forKey: tempoDefaultsKey) as? [String: Double] ?? [:]
+        return map[trackID] ?? 1
+    }
+
+    private func persistTempoMultiplier() {
+        guard let trackID = track?.trackID else { return }
+        var map = UserDefaults.standard.dictionary(forKey: tempoDefaultsKey) as? [String: Double] ?? [:]
+        if tempoMultiplier == 1 {
+            map.removeValue(forKey: trackID)
+        } else {
+            map[trackID] = tempoMultiplier
+        }
+        UserDefaults.standard.set(map, forKey: tempoDefaultsKey)
+    }
+
+    private func storedManual(for trackID: String) -> (key: String?, tempo: Double?) {
+        let keys = UserDefaults.standard.dictionary(forKey: manualKeyDefaultsKey) as? [String: String] ?? [:]
+        let tempos = UserDefaults.standard.dictionary(forKey: manualTempoDefaultsKey) as? [String: Double] ?? [:]
+        return (keys[trackID], tempos[trackID])
+    }
+
+    private func persistManual() {
+        guard let trackID = track?.trackID else { return }
+
+        var keys = UserDefaults.standard.dictionary(forKey: manualKeyDefaultsKey) as? [String: String] ?? [:]
+        keys[trackID] = manualKey
+        UserDefaults.standard.set(keys, forKey: manualKeyDefaultsKey)
+
+        var tempos = UserDefaults.standard.dictionary(forKey: manualTempoDefaultsKey) as? [String: Double] ?? [:]
+        tempos[trackID] = manualTempo
+        UserDefaults.standard.set(tempos, forKey: manualTempoDefaultsKey)
     }
 
     private func persistOffset() {

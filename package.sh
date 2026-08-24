@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="build/Karaoke.app"
+APP="build/Spot-a-oke.app"
 VOL="Spot-a-oke"
 DMG="build/Spot-a-oke.dmg"
 
@@ -17,8 +17,8 @@ ln -s /Applications "$STAGE/Applications"    # drag-to-install target
 
 # A volume icon needs both the file and the Finder "has custom icon" bit; the
 # bit can only be set on a writable volume, so build read-write then compress.
-if [[ -f Icon/Karaoke.icns ]]; then
-    cp Icon/Karaoke.icns "$STAGE/.VolumeIcon.icns"
+if [[ -f Icon/Spot-a-oke.icns ]]; then
+    cp Icon/Spot-a-oke.icns "$STAGE/.VolumeIcon.icns"
 fi
 
 RW=$(mktemp -u).dmg

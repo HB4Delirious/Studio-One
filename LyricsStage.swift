@@ -48,7 +48,7 @@ struct LyricsStage: View {
                         .onTapGesture { if entry.isActive { onJump(entry.line) } }
                 }
             }
-            .animation(.easeInOut(duration: 0.42), value: activeIndex)
+            .animation(.easeInOut(duration: 0.34), value: activeIndex)
         }
     }
 
@@ -151,7 +151,6 @@ private struct GhostAsides: View {
                 .font(.system(size: fontSize * 0.46 * spot.scale,
                               weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.34))
-                .blur(radius: 0.4)
                 .rotationEffect(.degrees(spot.tilt))
                 // Drifts slightly larger across its life, so it breathes rather
                 // than sitting there like a pasted-on label.
