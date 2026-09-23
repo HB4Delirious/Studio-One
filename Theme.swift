@@ -21,4 +21,15 @@ enum Theme {
 
     static let timecode = Font.system(size: 11, weight: .medium, design: .monospaced)
     static let label = Font.system(size: 11, weight: .semibold, design: .rounded)
+
+    /// Two colours for a placeholder tile, derived from a name so a playlist
+    /// keeps the same look between launches and while its cover loads.
+    static func tile(for name: String) -> [Color] {
+        var hash: UInt64 = 5381
+        for byte in name.utf8 { hash = hash &* 33 &+ UInt64(byte) }
+        let hue = Double(hash % 360) / 360
+        return [Color(hue: hue, saturation: 0.55, brightness: 0.62),
+                Color(hue: (hue + 0.12).truncatingRemainder(dividingBy: 1),
+                      saturation: 0.68, brightness: 0.38)]
+    }
 }

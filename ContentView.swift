@@ -6,7 +6,6 @@ import AppKit
 struct LyricsWindow: View {
     @EnvironmentObject private var model: KaraokeModel
     @AppStorage("lyricFontSize") private var fontSize: Double = 42
-    @AppStorage(FrameRate.defaultsKey) private var targetFPS: Double = FrameRate.minimum
     @Environment(\.openWindow) private var openWindow
     @State private var isFullScreen = false
     // A reference box, deliberately not @State holding the window itself:
@@ -16,25 +15,21 @@ struct LyricsWindow: View {
     @State private var host = WindowHolder()
 
     var body: some View {
-        stage
-            .background {
-                ZStack {
-                    Theme.backdrop
-                    if model.track != nil {
-                        AmbientBackground()
-                    }
-                }
-                .ignoresSafeArea()
-            }
+        LyricsPane(fontSize: CGFloat(fontSize))
             .frame(minWidth: 480, minHeight: 320)
             .preferredColorScheme(.dark)
             // Full screen is the performance view: nothing but lyrics.
             .toolbar(isFullScreen ? .hidden : .visible, for: .windowToolbar)
             .background(WindowReader { window in
                 host.window = window
-                // A Window scene doesn't advertise full-screen support, so the
-                // green button offers zoom (+) instead of the full-screen arrows.
-                // WindowGroup sets this for you; Window does not.
+                // SwiftUI marks the first scene primary and every later scene
+                // *auxiliary*, and an auxiliary window's green button offers zoom
+                // (+) rather than full screen. Inserting fullScreenPrimary alone
+                // does nothing while the auxiliary flag is still set — this
+                // window became secondary when the controls became the launch
+                // window, which is exactly when full screen stopped working.
+                window.collectionBehavior.remove(.fullScreenAuxiliary)
+                window.collectionBehavior.remove(.fullScreenNone)
                 window.collectionBehavior.insert(.fullScreenPrimary)
             })
             .onReceive(NotificationCenter.default.publisher(
@@ -69,114 +64,12 @@ struct LyricsWindow: View {
         return window === host
     }
 
-    @ViewBuilder
-    private var stage: some View {
-        switch model.connection {
-        case .checking:
-            StageMessage(title: "Looking for Spotify…", detail: nil)
-
-        case .spotifyNotRunning:
-            StageMessage(
-                title: "Spotify isn't open",
-                detail: "Launch Spotify and press play. Karaoke follows whatever you're listening to.",
-                action: ("Open Spotify", {
-                    guard let url = NSWorkspace.shared
-                        .urlForApplication(withBundleIdentifier: SpotifyController.bundleID) else { return }
-                    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
-                }))
-
-        case .permissionDenied:
-            StageMessage(
-                title: "Karaoke can't reach Spotify",
-                detail: "macOS gates app-to-app control. Turn on Spotify under Privacy & Security › Automation, then reopen Karaoke.",
-                action: ("Open Automation settings", { SpotifyController.openAutomationSettings() }))
-
-        case .failed(let message):
-            StageMessage(title: "Something went wrong", detail: message)
-
-        case .ready:
-            lyricStage
-        }
-    }
-
-    @ViewBuilder
-    private var lyricStage: some View {
-        switch model.lyricsState {
-        case .idle:
-            StageMessage(title: "Nothing playing", detail: "Start a track in Spotify, or search for one below.")
-
-        case .loading:
-            StageMessage(title: "Fetching lyrics…", detail: nil)
-
-        case .missing:
-            StageMessage(
-                title: "No timed lyrics for this one",
-                detail: "LRCLIB doesn't have a synced version yet. Try another track, or re-check in case the match failed.",
-                action: ("Look again", { model.reloadLyrics() }))
-
-        case .instrumental:
-            StageMessage(title: "Instrumental", detail: "This track has no vocal line to follow.")
-
-        case .plain(let text):
-            ScrollView {
-                Text(text)
-                    .font(Theme.lyric(20, active: false))
-                    .foregroundStyle(Theme.upcoming)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(44)
-            }
-            .overlay(alignment: .top) {
-                Text("Untimed lyrics — these won't follow the music")
-                    .font(Theme.label)
-                    .foregroundStyle(Theme.cue)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 12)
-                    .background(Theme.panel, in: Capsule())
-                    .padding(.top, 12)
-            }
-
-        case .synced:
-            // TimelineView drives redraws off the display refresh instead of
-            // republishing position 30x a second through Combine.
-            TimelineView(.animation(minimumInterval: FrameRate.interval(for: targetFPS),
-                                    paused: !model.isPlaying)) { _ in
-                let position = model.lyricPosition
-                let index = model.activeIndex(at: position)
-
-                ZStack(alignment: .top) {
-                    LyricsStage(
-                        lines: model.lines,
-                        position: position,
-                        activeIndex: index,
-                        fontSize: CGFloat(fontSize),
-                        onJump: { model.jump(to: $0) })
-
-                    if let gap = upcomingGap(at: position, activeIndex: index) {
-                        CueCountdown(secondsRemaining: gap)
-                            .padding(.top, 22)
-                            .transition(.opacity)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Seconds until the next line, but only once we're inside the final 4 seconds
-    /// of a gap long enough to feel like dead air.
-    private func upcomingGap(at position: Double, activeIndex: Int?) -> Double? {
-        let nextIndex = (activeIndex.map { $0 + 1 }) ?? 0
-        guard nextIndex < model.lines.count else { return nil }
-
-        let next = model.lines[nextIndex]
-        let gapStart = activeIndex.map { model.lines[$0].end } ?? 0
-        guard next.time - gapStart >= 4 else { return nil }
-
-        let remaining = next.time - position
-        return (remaining > 0 && remaining <= 4) ? remaining : nil
-    }
 }
 
 /// Transport, track info, sync and settings — everything that isn't the lyrics.
+/// The compact control strip this window used to be, before it became the
+/// library browser. Kept because it is the whole layout in one view: pointing
+/// the Controls scene back at `ControlsWindow()` restores it.
 struct ControlsWindow: View {
     @EnvironmentObject private var model: KaraokeModel
     @AppStorage("lyricFontSize") private var fontSize: Double = 42
@@ -287,16 +180,26 @@ private struct WindowReader: NSViewRepresentable {
         DispatchQueue.main.async { resolve(view, context.coordinator) }
     }
 
+    /// Runs on every update rather than once per window. Window configuration
+    /// applied a single time at startup can be overwritten by SwiftUI afterwards
+    /// — which is how full-screen capability kept reverting to a plain zoom
+    /// button. Re-applying is safe now: the window lives in a reference box, so
+    /// storing it doesn't invalidate the view and can't loop.
     private func resolve(_ view: NSView, _ coordinator: Coordinator) {
-        guard let window = view.window, window !== coordinator.resolved else { return }
+        guard let window = view.window else { return }
+        let isNew = window !== coordinator.resolved
         coordinator.resolved = window
         onResolve(window)
+
+        if isNew {
+            Diagnostics.log("window \"\(window.title)\": fullScreenPrimary=\(window.collectionBehavior.contains(.fullScreenPrimary)) resizable=\(window.styleMask.contains(.resizable))")
+        }
     }
 }
 
 /// Panel surface that takes on the cover's colour. Kept low-opacity over the
 /// dark base so white text keeps its contrast on bright artwork.
-private struct TintedPanel: View {
+struct TintedPanel: View {
     let tint: Color
     var strength: Double = 0.22
 
@@ -312,16 +215,19 @@ private struct TintedPanel: View {
 
 // MARK: - Header
 
-private struct NowPlayingHeader: View {
+struct NowPlayingHeader: View {
     @EnvironmentObject private var model: KaraokeModel
     var artworkSize: CGFloat = 38
     var centred: Bool = false
+    /// Dropped when the stage preview is showing above it — two pictures of the
+    /// same song stacked in a 336-point column is one too many.
+    var showArtwork: Bool = true
 
     var body: some View {
         Group {
             if centred {
                 VStack(spacing: 16) {
-                    artwork
+                    if showArtwork { artwork }
                     VStack(spacing: 5) {
                         title.font(.system(size: 22, weight: .semibold, design: .rounded))
                         artist.font(.system(size: 15, weight: .medium, design: .rounded))
@@ -353,7 +259,9 @@ private struct NowPlayingHeader: View {
     }
 
     private var artist: some View {
-        Text(model.track?.artist ?? "—")
+        // A space, not a dash, when nothing plays: the line keeps its height
+        // so the header doesn't jump, without a stray mark under the title.
+        Text(model.track?.artist ?? " ")
             .foregroundStyle(Theme.upcoming)
             .lineLimit(1)
     }
@@ -368,6 +276,8 @@ private struct NowPlayingHeader: View {
                 } placeholder: {
                     Theme.backdrop
                 }
+            } else if let image = model.localArtwork {
+                Image(nsImage: image).resizable().scaledToFill()
             } else {
                 Theme.backdrop
             }
@@ -387,7 +297,7 @@ private struct NowPlayingHeader: View {
 /// Position bar you can drag to seek. Redraws off its own TimelineView because
 /// the clock isn't @Published — polling only republishes twice a second, which
 /// would make the playhead visibly step rather than glide.
-private struct Scrubber: View {
+struct Scrubber: View {
     @EnvironmentObject private var model: KaraokeModel
     @AppStorage(FrameRate.defaultsKey) private var targetFPS: Double = FrameRate.minimum
     @State private var scrub: Double?
@@ -395,13 +305,15 @@ private struct Scrubber: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: FrameRate.interval(for: targetFPS),
                                 paused: !model.isPlaying)) { _ in
+            let hasTrack = (model.track?.duration ?? 0) > 0
             let duration = max(1, model.track?.duration ?? 1)
-            let live = min(1, max(0, model.clock.position / duration))
+            let live = hasTrack ? min(1, max(0, model.clock.position / duration)) : 0
             let fraction = scrub ?? live
 
             // Times flank the bar so it can run the full width of the window.
             HStack(spacing: 12) {
-                Text(Self.timecode(fraction * duration))
+                // Nothing playing reads as blank, not as a one-second song.
+                Text(hasTrack ? Self.timecode(fraction * duration) : "–:––")
                     .font(Theme.timecode)
                     .foregroundStyle(scrub == nil ? Theme.upcoming : Theme.cue)
                     .frame(width: 42, alignment: .trailing)
@@ -419,9 +331,11 @@ private struct Scrubber: View {
                             .fill(.white)
                             .frame(width: scrub == nil ? 11 : 14, height: scrub == nil ? 11 : 14)
                             .offset(x: width * fraction - (scrub == nil ? 5.5 : 7))
+                            .opacity(hasTrack ? 1 : 0)
                     }
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
+                    .allowsHitTesting(hasTrack)
                     .gesture(
                         // minimumDistance 0 so a plain click seeks too.
                         DragGesture(minimumDistance: 0)
@@ -438,11 +352,14 @@ private struct Scrubber: View {
                 }
                 .frame(height: 16)
 
-                Text(Self.timecode(duration))
+                Text(hasTrack ? Self.timecode(duration) : "–:––")
                     .font(Theme.timecode)
                     .foregroundStyle(Theme.upcoming)
                     .frame(width: 42, alignment: .leading)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Position")
+            .accessibilityValue(hasTrack ? "\(Self.timecode(fraction * duration)) of \(Self.timecode(duration))" : "Nothing playing")
         }
     }
 
@@ -454,7 +371,7 @@ private struct Scrubber: View {
 
 // MARK: - Controls
 
-private struct ControlBar: View {
+struct ControlBar: View {
     @EnvironmentObject private var model: KaraokeModel
     @Binding var fontSize: Double
     @Binding var showSearch: Bool
@@ -503,7 +420,7 @@ private struct ControlBar: View {
     /// Everything on one line — used whenever the window is wide enough.
     private var singleRow: some View {
         HStack(spacing: 18) {
-            searchButton
+            sourceSwitch
             Divider().frame(height: 18).overlay(Theme.hairline)
             transportGroup
             Spacer()
@@ -517,7 +434,7 @@ private struct ControlBar: View {
     private var stackedRows: some View {
         VStack(spacing: 12) {
             HStack(spacing: 18) {
-                searchButton
+                sourceSwitch
                 Spacer()
                 transportGroup
                 Spacer()
@@ -530,22 +447,34 @@ private struct ControlBar: View {
         }
     }
 
-    private var searchButton: some View {
-        Button { showSearch = true } label: {
-            Label("Find a song", systemImage: "magnifyingglass")
-        }
-        .buttonStyle(.borderless)
+    /// Which player drives the app. Switching rebuilds the controller live.
+    private var sourceSwitch: some View {
+        Picker("", selection: Binding(
+            get: { model.musicSource },
+            set: { model.changeSource(to: $0) })) {
+                ForEach(MusicSource.allCases) { source in
+                    Text(source.displayName).tag(source)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 168)
+            .help("Follow Spotify or Apple Music")
     }
 
     private var transportGroup: some View {
         HStack(spacing: 10) {
-            transport("backward.end.fill") { model.previousTrack() }
-            transport(model.isPlaying ? "pause.fill" : "play.fill") { model.togglePlayback() }
-            transport("forward.end.fill") { model.nextTrack() }
+            transport("backward.end.fill", "Previous track") { model.previousTrack() }
+            transport(model.isPlaying ? "pause.fill" : "play.fill",
+                      model.isPlaying ? "Pause" : "Play") { model.togglePlayback() }
+            transport("forward.end.fill", "Next track") { model.nextTrack() }
         }
     }
 
-    private func transport(_ symbol: String, action: @escaping () -> Void) -> some View {
+    /// The label matters: the symbols' own descriptions are backwards here —
+    /// VoiceOver read "previous" as "Go To End" and "next" as "Go To Start".
+    private func transport(_ symbol: String, _ label: String,
+                           action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 13))
@@ -553,6 +482,8 @@ private struct ControlBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
+        .accessibilityLabel(label)
+        .help(label)
         .foregroundStyle(.white)
     }
 
@@ -597,7 +528,7 @@ private struct ControlBar: View {
                     .foregroundStyle(model.manualKey != nil ? Theme.cue : .white)
 
                 HStack(spacing: 5) {
-                    labelledValue("BPM", Self.bpmText(analysis?.tempo))
+                    labelledValue("BPM", TrackAnalysis.bpmText(analysis?.tempo))
                         .foregroundStyle(model.manualTempo != nil ? Theme.cue : .white)
 
                     if suspect {
@@ -621,10 +552,6 @@ private struct ControlBar: View {
         }
     }
 
-    private static func bpmText(_ tempo: Double?) -> String {
-        guard let tempo, tempo > 0 else { return "—" }
-        return String(format: "%.0f", tempo)
-    }
 
     // MARK: Entry steps
 
@@ -695,10 +622,14 @@ private struct ControlBar: View {
     private func beginEntry() {
         // Seed from whatever is showing, so an override starts from the current
         // value rather than from scratch.
-        if let key = model.publishedAnalysis?.key, let first = key.first {
-            letter = String(first)
-            accidental = key.contains("♯") ? "♯" : (key.contains("♭") ? "♭" : "")
-            isMinor = key.hasSuffix("m")
+        // Through the same reading MIDI uses. Taken apart by hand, "Eb" seeded
+        // a plain E and "A minor" a major key, so opening the editor and
+        // pressing Done could change the key without anyone touching it.
+        if let key = model.publishedAnalysis?.key, let coded = MIDIBridge.encode(key: key) {
+            let name = MIDIBridge.decode(root: coded.root, minor: false)
+            letter = String(name.prefix(1))
+            accidental = name.contains("♯") ? "♯" : ""
+            isMinor = coded.minor
         }
         if let tempo = model.publishedAnalysis?.tempo, tempo > 0 {
             bpmField = String(format: "%.0f", tempo)
@@ -708,8 +639,15 @@ private struct ControlBar: View {
 
     private func commit() {
         model.manualKey = letter + accidental + (isMinor ? "m" : "")
+        // Empty clears the tempo. Anything else has to read as a plausible
+        // tempo: "120,5" or a typo used to become nil too, quietly erasing a
+        // tempo set earlier, and "0" or "5000" went straight out to Logic.
         let trimmed = bpmField.trimmingCharacters(in: .whitespaces)
-        model.manualTempo = trimmed.isEmpty ? nil : Double(trimmed)
+        if trimmed.isEmpty {
+            model.manualTempo = nil
+        } else if let typed = Double(scripted: trimmed), typed.isFinite {
+            model.manualTempo = min(400, max(20, (typed * 10).rounded() / 10))
+        }
         bpmFocused = false
         bpmField = ""
         step = .idle
@@ -775,10 +713,22 @@ private struct ControlBar: View {
 
     private var fontStepper: some View {
         HStack(spacing: 6) {
-            Button { fontSize = max(24, fontSize - 4) } label: { Image(systemName: "textformat.size.smaller") }
-                .buttonStyle(.borderless)
-            Button { fontSize = min(96, fontSize + 4) } label: { Image(systemName: "textformat.size.larger") }
-                .buttonStyle(.borderless)
+            // The glyphs are a few points across; the frames make each one a
+            // target a finger on a trackpad can actually hit.
+            Button { fontSize = max(24, fontSize - 4) } label: {
+                Image(systemName: "textformat.size.smaller")
+                    .frame(width: 22, height: 22).contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Smaller lyrics")
+            .help("Smaller lyrics")
+            Button { fontSize = min(96, fontSize + 4) } label: {
+                Image(systemName: "textformat.size.larger")
+                    .frame(width: 22, height: 22).contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Larger lyrics")
+            .help("Larger lyrics")
         }
         .foregroundStyle(Theme.upcoming)
     }
@@ -806,11 +756,20 @@ struct StageMessage: View {
             }
 
             if let action {
-                Button(action.0, action: action.1)
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.sung)
-                    .foregroundStyle(Theme.backdrop)
-                    .padding(.top, 4)
+                // Drawn by hand: a prominent system button greys out when its
+                // window isn't the active one, and the lyrics window almost
+                // never is — it sits on the second screen while you work in
+                // Controls, where this read as a disabled, near-black button.
+                Button(action: action.1) {
+                    Text(action.0)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.backdrop)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(Capsule().fill(Theme.sung))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

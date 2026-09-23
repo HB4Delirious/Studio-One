@@ -30,26 +30,36 @@ struct SpotifySnapshot {
 enum SpotifyControllerError: LocalizedError {
     case notRunning
     case notAuthorized
+    case notResponding
     case scriptFailed(String)
     case malformedResponse
 
     var errorDescription: String? {
+        // Named after whichever source is playing: this type is thrown by the
+        // Apple Music controller too, and said "Spotify isn't running" while
+        // Music was the one that wasn't answering.
+        let player = MusicSource.current.displayName
         switch self {
         case .notRunning:
-            return "Spotify isn't running. Open Spotify and start a track."
+            return "\(player) isn't running. Open \(player) and start a track."
         case .notAuthorized:
-            return "Karaoke needs permission to control Spotify. Grant it in System Settings › Privacy & Security › Automation."
+            return "Studio One needs permission to control \(player). Grant it in System Settings › Privacy & Security › Automation."
+        case .notResponding:
+            return "\(player) isn't answering. If it's showing a dialog or sign-in window, close that."
         case .scriptFailed(let detail):
-            return "Spotify didn't respond: \(detail)"
+            return "\(player) didn't respond: \(detail)"
         case .malformedResponse:
-            return "Spotify returned something unreadable."
+            return "\(player) returned something unreadable."
         }
     }
 }
 
 // MARK: - Controller
 
-final class SpotifyController {
+final class SpotifyController: MusicPlayer, @unchecked Sendable {
+
+    var source: MusicSource { .spotify }
+    var supportsPlayingByID: Bool { true }
 
     static let bundleID = "com.spotify.client"
 
@@ -60,6 +70,7 @@ final class SpotifyController {
     /// tabs, pipes or commas can't corrupt the parse.
     private static let snapshotSource = """
     set d to character id 31
+    with timeout of 4 seconds
     tell application id "com.spotify.client"
         set ps to player state as text
         if ps is "stopped" then return "stopped"
@@ -70,6 +81,7 @@ final class SpotifyController {
         end try
         return ps & d & (id of t) & d & (name of t) & d & (artist of t) & d & (album of t) & d & ((duration of t) as text) & d & ((player position) as text) & d & aw
     end tell
+    end timeout
     """
 
     init() throws {
@@ -93,7 +105,8 @@ final class SpotifyController {
     /// Asks macOS whether we're allowed to send Apple Events to Spotify.
     /// Pass `prompt: true` once at launch to trigger the system consent dialog.
     @discardableResult
-    static func checkAutomationPermission(prompt: Bool) -> Bool {
+    static func checkAutomationPermission(for bundleID: String = SpotifyController.bundleID,
+                                          prompt: Bool) -> Bool {
         var target = AEAddressDesc()
         let idData = Data(bundleID.utf8)
         // AECreateDesc returns OSErr (Int16); widen so it compares against noErr (OSStatus).
@@ -114,7 +127,20 @@ final class SpotifyController {
 
     // MARK: Reading state
 
-    func snapshot() throws -> SpotifySnapshot {
+    /// All AppleScript for this controller runs here. Serial, because
+    /// NSAppleScript is not safe to use concurrently.
+    private let scriptQueue = DispatchQueue(label: "com.logan.SpotifyKaraoke.script.spotify")
+
+    func snapshot() async throws -> SpotifySnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            scriptQueue.async {
+                do { continuation.resume(returning: try self.snapshotNow()) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func snapshotNow() throws -> SpotifySnapshot {
         guard Self.isSpotifyRunning else { throw SpotifyControllerError.notRunning }
 
         let start = CACurrentMediaTime()
@@ -136,10 +162,10 @@ final class SpotifyController {
         guard fields.count >= 7 else { throw SpotifyControllerError.malformedResponse }
 
         let state = SpotifyPlayerState(rawValue: fields[0]) ?? .paused
-        let rawDuration = Double(fields[5]) ?? 0
+        let rawDuration = Double(scripted: fields[5]) ?? 0
         // Spotify reports duration in milliseconds; guard anyway in case that ever changes.
         let duration = rawDuration > 3600 ? rawDuration / 1000 : rawDuration
-        let position = Double(fields[6]) ?? 0
+        let position = Double(scripted: fields[6]) ?? 0
         let artwork = fields.count > 7 ? URL(string: fields[7]) : nil
 
         let track = SpotifyTrack(
@@ -156,17 +182,40 @@ final class SpotifyController {
 
     // MARK: Transport
 
-    func playPause() throws { try run("playpause") }
-    func next() throws { try run("next track") }
-    func previous() throws { try run("previous track") }
+    func playPause() async throws { try await run("playpause") }
+    func next() async throws { try await run("next track") }
+    func previous() async throws { try await run("previous track") }
 
-    func seek(to seconds: Double) throws {
-        try run("set player position to \(max(0, seconds))")
+    func seek(to seconds: Double) async throws {
+        try await run("set player position to \(max(0, seconds))")
     }
 
-    func play(uri: String) throws {
+    func play(uri: String) async throws {
+        try await play(uri: uri, context: nil)
+    }
+
+    /// With a context, Spotify carries on through the playlist afterwards;
+    /// without one it plays the single track.
+    func play(uri: String, context: String?) async throws {
         guard Self.isValidTrackURI(uri) else { throw SpotifyControllerError.malformedResponse }
-        try run("play track \"\(uri)\"")
+        if let context, Self.isValidContextURI(context) {
+            try await run("play track \"\(uri)\" in context \"\(context)\"")
+        } else {
+            try await run("play track \"\(uri)\"")
+        }
+    }
+
+    /// The context goes inside an AppleScript string literal, so anything that
+    /// could close the literal is refused. Covers playlists and the Liked Songs
+    /// collection (`spotify:user:<id>:collection`); user IDs are not always
+    /// alphanumeric, so that part is only checked for quotes and backslashes.
+    static func isValidContextURI(_ uri: String) -> Bool {
+        guard !uri.contains("\""), !uri.contains("\\"), !uri.contains("\n") else { return false }
+        if uri.hasPrefix("spotify:playlist:") {
+            let id = uri.dropFirst("spotify:playlist:".count)
+            return !id.isEmpty && id.allSatisfy { $0.isLetter || $0.isNumber }
+        }
+        return uri.hasPrefix("spotify:user:") && uri.hasSuffix(":collection")
     }
 
     func activate() {
@@ -176,17 +225,61 @@ final class SpotifyController {
             .activate()
     }
 
+    /// Spotify's own volume, 0–100, on the script queue like every other
+    /// Apple Event to it. Nil when Spotify isn't running.
+    func soundVolume() async -> Int? {
+        await withCheckedContinuation { continuation in
+            scriptQueue.async {
+                guard Self.isSpotifyRunning,
+                      let script = NSAppleScript(source: "tell application id \"com.spotify.client\" to get sound volume") else {
+                    return continuation.resume(returning: nil)
+                }
+                var error: NSDictionary?
+                let result = script.executeAndReturnError(&error)
+                continuation.resume(returning: error == nil ? Int(result.int32Value) : nil)
+            }
+        }
+    }
+
+    func setSoundVolume(_ value: Int) async {
+        let clamped = min(100, max(0, value))
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            scriptQueue.async {
+                if Self.isSpotifyRunning {
+                    var error: NSDictionary?
+                    NSAppleScript(source: "tell application id \"com.spotify.client\" to set sound volume to \(clamped)")?
+                        .executeAndReturnError(&error)
+                }
+                continuation.resume()
+            }
+        }
+    }
+
     // MARK: Plumbing
 
-    private func run(_ command: String) throws {
-        guard Self.isSpotifyRunning else { throw SpotifyControllerError.notRunning }
-        let source = "tell application id \"com.spotify.client\" to \(command)"
-        guard let script = NSAppleScript(source: source) else {
-            throw SpotifyControllerError.malformedResponse
+    /// On the script queue, like the snapshot: never the main thread, and
+    /// never alongside another script.
+    private func run(_ command: String) async throws {
+        // Bounded; see the Apple Music controller.
+        let source = """
+        with timeout of 10 seconds
+            tell application id "com.spotify.client" to \(command)
+        end timeout
+        """
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            scriptQueue.async {
+                guard Self.isSpotifyRunning else {
+                    return continuation.resume(throwing: SpotifyControllerError.notRunning)
+                }
+                guard let script = NSAppleScript(source: source) else {
+                    return continuation.resume(throwing: SpotifyControllerError.malformedResponse)
+                }
+                var error: NSDictionary?
+                script.executeAndReturnError(&error)
+                if let error { continuation.resume(throwing: Self.mapError(error)) }
+                else { continuation.resume() }
+            }
         }
-        var error: NSDictionary?
-        script.executeAndReturnError(&error)
-        if let error { throw Self.mapError(error) }
     }
 
     /// Only ever interpolate strings we've validated into AppleScript source.
@@ -201,6 +294,7 @@ final class SpotifyController {
         switch code {
         case -1743, -1744:  return .notAuthorized
         case -600, -609:    return .notRunning
+        case -1712:         return .notResponding
         default:            return .scriptFailed(describe(dict))
         }
     }

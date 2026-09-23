@@ -32,4 +32,14 @@ enum FrameRate {
     static func interval(for requested: Double) -> Double {
         1.0 / Swift.min(Swift.max(minimum, requested), 240)
     }
+
+    /// Same, but allowed below the 60fps floor.
+    ///
+    /// The floor exists because the stage on the TV is the performance and
+    /// should never look like it is stuttering. A thumbnail in the corner of the
+    /// controls window is not the performance, so it is capped instead of
+    /// floored — its own ceiling wins whenever it is the lower of the two.
+    static func interval(for requested: Double, ceiling: Double) -> Double {
+        1.0 / Swift.max(15, Swift.min(Swift.min(Swift.max(minimum, requested), 240), ceiling))
+    }
 }

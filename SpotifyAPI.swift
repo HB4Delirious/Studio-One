@@ -63,14 +63,18 @@ actor SpotifyAPI {
         ]
 
         var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 12
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-
-        if status == 401 {
-            // Token went stale mid-flight; drop it so the next call re-authenticates.
+        // Twice at most: a token that went stale mid-flight gets one fresh
+        // try, rather than failing the search and making you type it again.
+        var data = Data()
+        var status = 0
+        for attempt in 0..<2 {
+            request.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
+            let (body, response) = try await URLSession.shared.data(for: request)
+            data = body
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 401, attempt == 0 else { break }
             accessToken = nil
             expiresAt = .distantPast
         }
@@ -90,6 +94,14 @@ actor SpotifyAPI {
     }
 
     // MARK: - Token
+
+    /// Fetch the token ahead of time, ignoring failure.
+    ///
+    /// The first call reads credentials from the keychain and does an OAuth
+    /// round trip, which measured about fifty seconds cold — long enough that
+    /// the first song of a session got no key or tempo at all. Doing it in the
+    /// background just after launch means the first lookup finds it ready.
+    func warm() async { _ = try? await token() }
 
     private func token() async throws -> String {
         if let accessToken, Date() < expiresAt.addingTimeInterval(-30) {

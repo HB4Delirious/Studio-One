@@ -38,6 +38,9 @@ final class PaletteProvider {
 
     // MARK: - Extraction
 
+    /// For sources that hand over image data rather than a URL.
+    func palette(for image: NSImage) -> [PaletteColor] { Self.extract(from: image) }
+
     private static func extract(from image: NSImage) -> [PaletteColor] {
         let side = 32
         guard let rep = NSBitmapImageRep(

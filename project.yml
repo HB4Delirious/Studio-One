@@ -1,8 +1,8 @@
 # XcodeGen spec. Requires full Xcode (not just Command Line Tools):
-#   brew install xcodegen && xcodegen generate && xcodebuild -scheme Karaoke build
+#   brew install xcodegen && xcodegen generate && xcodebuild -scheme 'Studio One' build
 #
 # Every setting below is load-bearing — see CLAUDE.md "Build configuration".
-name: Karaoke
+name: Studio One
 
 options:
   bundleIdPrefix: com.logan
@@ -11,7 +11,7 @@ options:
   createIntermediateGroups: true
 
 targets:
-  Karaoke:
+  Studio One:
     type: application
     platform: macOS
 
@@ -30,19 +30,19 @@ targets:
     info:
       path: Info.plist
       properties:
-        CFBundleName: Karaoke
-        CFBundleDisplayName: Karaoke
+        CFBundleName: Studio One
+        CFBundleDisplayName: Studio One
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.music
         NSHighResolutionCapable: true
         # Without this the app crashes on first Spotify contact.
         NSAppleEventsUsageDescription: >-
-          Karaoke reads the current track and playback position from Spotify
+          Studio One reads the current track and playback position from Spotify
           to keep the lyrics in sync.
 
     settings:
       base:
-        PRODUCT_NAME: Karaoke
+        PRODUCT_NAME: Studio One
         PRODUCT_BUNDLE_IDENTIFIER: com.logan.SpotifyKaraoke
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"

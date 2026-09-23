@@ -13,6 +13,12 @@ import CoreAudio
 /// mastered against a different release — nothing can, without hearing the audio.
 enum AudioLatency {
 
+    /// Measured away from the main thread — CoreAudio property reads can stall
+    /// when the audio path is busy, and this runs on every poll.
+    static func measuredMilliseconds() async -> Double {
+        await Task.detached(priority: .utility) { currentSeconds() * 1000 }.value
+    }
+
     /// Total output latency in seconds, or 0 if it can't be determined.
     static func currentSeconds() -> Double {
         guard let device = defaultOutputDevice() else { return 0 }

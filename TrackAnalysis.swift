@@ -10,6 +10,19 @@ struct TrackAnalysis: Equatable, Sendable {
     var halfTimeSuspect: Bool = false
 
     var isEmpty: Bool { key == nil && tempo == nil }
+
+    /// Whole beats per minute. The fractional part is real — sources report
+    /// 130.03 — but it is noise at reading distance.
+    static func bpmText(_ tempo: Double?) -> String {
+        guard let tempo, tempo > 0 else { return "—" }
+        return String(format: "%.0f", tempo)
+    }
+
+    /// The one-line form the menu bar shows: "G♯m · 130".
+    var summary: String {
+        let parts = [key, tempo.map { _ in Self.bpmText(tempo) }].compactMap { $0 }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
 }
 
 /// Fetches key and tempo from GetSongBPM (https://getsongbpm.com).
@@ -24,6 +37,15 @@ actor AnalysisProvider {
     static let shared = AnalysisProvider()
 
     private var cache: [String: TrackAnalysis] = [:]
+
+    /// Read once per launch. A keychain read can raise an authorisation prompt,
+    /// and asking on every track change would stall each lookup behind a dialog
+    /// — silently, since a pending prompt looks identical to a slow network.
+    private var cachedKey: String??
+
+    /// Apple Music track ID → Spotify track ID, once resolved. The bridge costs
+    /// a search, and the answer never changes for a given track.
+    private var bridge: [String: String?] = [:]
     private let base = "https://api.getsong.co"
     private let userAgent = "SpotifyKaraoke/1.0 (macOS; personal karaoke client)"
 
@@ -31,12 +53,28 @@ actor AnalysisProvider {
         let cacheKey = track.trackID
         if let hit = cache[cacheKey] { return hit }
 
-        // Both sources, concurrently. ReccoBeats is keyed by Spotify track ID so
-        // it's the more trustworthy match, but querying GetSongBPM too gives a
-        // second opinion to check the tempo against.
-        async let primary = reccoBeats(trackID: cacheKey)
+        // Both sources, concurrently. ReccoBeats is keyed by Spotify track ID
+        // so it's the more trustworthy match, but querying GetSongBPM too gives
+        // a second opinion to check the tempo against.
+        //
+        // Apple Music tracks carry an "am:" identifier, so the same recording
+        // is looked up on Spotify first and ReccoBeats asked with that ID.
+        // Without this, Apple Music ran on GetSongBPM alone — which is why key
+        // and tempo went missing so much more often on that source.
+        // Note this tests `uri`, not `cacheKey`: `trackID` splits the uri on
+        // ":" and keeps the last component, so an Apple Music id arrives here
+        // as bare hex with the "am:" already stripped. Checking the wrong one
+        // meant ReccoBeats was being asked about Apple Music persistent IDs,
+        // which it can never know — a guaranteed miss on every single track.
+        async let primary: TrackAnalysis? = {
+            guard track.uri.hasPrefix("am:") else { return await reccoBeats(trackID: cacheKey) }
+            guard let id = await bridgedID(for: track) else { return nil }
+            return await reccoBeats(trackID: id)
+        }()
         async let secondary = getSongBPM(track)
         let (recco, gsb) = await (primary, secondary)
+
+        Diagnostics.log("  analysis sources: reccobeats=\(recco?.tempo.map { String(format: "%.1f", $0) } ?? "none") getsongbpm=\(gsb?.tempo.map { String(format: "%.1f", $0) } ?? "none")")
 
         guard var result = recco ?? gsb else { return nil }
 
@@ -49,7 +87,46 @@ actor AnalysisProvider {
         return result
     }
 
-    func invalidate() { cache.removeAll() }
+    /// After a new API key is saved. The key itself is cached too, so
+    /// clearing only the results kept using the old key — or none — until the
+    /// app was relaunched.
+    func invalidate() {
+        cache.removeAll()
+        cachedKey = nil
+    }
+
+    // MARK: - Spotify bridge
+
+    /// Find the same recording on Spotify, so ReccoBeats has an ID to key off.
+    ///
+    /// Guarded three ways, because a wrong match here publishes someone else's
+    /// key and tempo to Logic with no sign anything is amiss: the artist has to
+    /// correspond whole-word, the running time has to be within four seconds,
+    /// and the titles have to share most of their words. A near-miss returns
+    /// nothing rather than a guess.
+    private func bridgedID(for track: SpotifyTrack) async -> String? {
+        if let known = bridge[track.trackID] { return known }
+
+        let hits = (try? await SpotifyAPI.shared.search("\(track.name) \(track.artist)", limit: 10)) ?? []
+        let match = hits.first { hit in
+            Self.names(hit.artist, match: track.artist)
+                && abs(hit.duration - track.duration) <= 4
+                && Self.titlesAgree(hit.name, track.name)
+        }
+        bridge[track.trackID] = match?.id
+        Diagnostics.log("  spotify bridge: \(match.map { "\($0.name) — \($0.artist)" } ?? "no confident match")")
+        return match?.id
+    }
+
+    /// Most of the words in the shorter title have to appear in the longer one.
+    /// Lets "Circles" match "Circles (Live)" while keeping "Hello" away from
+    /// "Hello Babe".
+    private static func titlesAgree(_ a: String, _ b: String) -> Bool {
+        let left = words(in: a), right = words(in: b)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        let (fewer, more) = left.count <= right.count ? (left, right) : (right, left)
+        return Double(fewer.intersection(more).count) / Double(fewer.count) >= 0.6
+    }
 
     // MARK: - ReccoBeats
 
@@ -78,14 +155,31 @@ actor AnalysisProvider {
 
     // MARK: - GetSongBPM
 
+    private func songBPMKey() -> String? {
+        if let cachedKey { return cachedKey }
+        let value = Credentials.read(.songBPM)
+        cachedKey = value
+        Diagnostics.log("  getsongbpm key: \((value?.isEmpty == false) ? "available" : "unavailable — keychain denied or empty")")
+        return value
+    }
+
     private func getSongBPM(_ track: SpotifyTrack) async -> TrackAnalysis? {
-        guard let apiKey = Credentials.read(.songBPM), !apiKey.isEmpty else { return nil }
+        guard let apiKey = songBPMKey(), !apiKey.isEmpty else { return nil }
 
         let title = LyricsProvider.normalizeTitle(track.name)
-        let artist = LyricsProvider.normalizeArtist(track.artist)
         guard !title.isEmpty else { return nil }
 
-        guard let hit = await search(title: title, artist: artist, apiKey: apiKey) else { return nil }
+        // Full artist first, as for the lyrics: trimmed to its first name,
+        // "Earth, Wind & Fire" becomes "Earth" — a different band, and a
+        // different key sent to the tuners.
+        let full = track.artist.trimmingCharacters(in: .whitespaces)
+        let primary = LyricsProvider.normalizeArtist(track.artist)
+        var found: (id: String?, analysis: TrackAnalysis)?
+        for artist in primary == full ? [full] : [full, primary] {
+            found = await search(title: title, artist: artist, apiKey: apiKey)
+            if found != nil { break }
+        }
+        guard let hit = found else { return nil }
 
         var analysis = hit.analysis
         if analysis.isEmpty, let id = hit.id, let detail = await song(id: id, apiKey: apiKey) {
@@ -153,8 +247,13 @@ actor AnalysisProvider {
     /// returning Madeleine Peyroux's key and tempo.
     private static func artist(_ record: [String: Any], matches wanted: String) -> Bool {
         guard let name = (record["artist"] as? [String: Any])?["name"] as? String else { return false }
-        let found = words(in: name)
-        let target = words(in: wanted)
+        return names(name, match: wanted)
+    }
+
+    /// Whole-word comparison for two artist strings.
+    private static func names(_ a: String, match b: String) -> Bool {
+        let found = words(in: a)
+        let target = words(in: b)
         guard !found.isEmpty, !target.isEmpty else { return false }
         if found == target { return true }
         // Allows "Simon & Garfunkel" to match "Simon and Garfunkel" without

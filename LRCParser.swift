@@ -8,6 +8,21 @@ struct LyricWord: Hashable {
     var isAside: Bool = false
 }
 
+/// A word of the lead line, carrying its index into `words` so timing still
+/// resolves after the asides are filtered out.
+struct LyricLeadWord: Identifiable, Hashable {
+    let id: Int
+    let text: String
+}
+
+/// A parenthetical phrase — backing vocals — with its own timing.
+struct LyricAside: Identifiable, Hashable {
+    let id: Int
+    let text: String
+    let start: Double
+    let end: Double
+}
+
 struct LyricLine: Identifiable, Hashable {
     let id: Int
     let time: Double
@@ -16,11 +31,21 @@ struct LyricLine: Identifiable, Hashable {
     let words: [LyricWord]
     /// Start of the next line — used to pace the sweep on plain LRC.
     var end: Double
+
+    /// Precomputed at parse time. The stage rebuilds these views on every frame
+    /// — up to 120 times a second — so filtering, trimming and grouping words
+    /// there meant doing the same allocations continuously for a result that
+    /// never changes within a line.
+    var leadWords: [LyricLeadWord] = []
+    var asides: [LyricAside] = []
     /// When the singing actually stops. For estimated words this lands earlier
     /// than `end`, which runs to the next line and so includes trailing silence.
     var voicedEnd: Double
 
     var duration: Double { max(0.2, end - time) }
+
+    /// Lines made entirely of parenthetical backing vocals have no lead to show.
+    var hasLead: Bool { !leadWords.isEmpty }
     var isBlank: Bool { text.trimmingCharacters(in: .whitespaces).isEmpty }
 
     /// Which word is being sung at `position`, and how far through it we are.
@@ -73,6 +98,36 @@ struct LyricLine: Identifiable, Hashable {
 
 enum LRCParser {
 
+    /// Best-fit offset of the beat grid, estimated from where the lyric lines
+    /// start.
+    ///
+    /// Nothing tells us where the downbeat actually falls. But lines tend to
+    /// begin on or near beats, so the circular mean of every line's phase within
+    /// the beat is a much better estimate than trusting any single line — and
+    /// unlike re-anchoring on each line, it yields a grid that never jumps,
+    /// which is what made the pulse read as offbeat.
+    static func beatOffset(lines: [LyricLine], bpm: Double) -> Double {
+        guard bpm >= 40, bpm <= 250 else { return 0 }
+        let beat = 60.0 / bpm
+
+        let starts = lines.filter { !$0.isBlank }.map(\.time)
+        guard starts.count >= 4 else { return 0 }
+
+        // Average the phases as angles; a plain mean would be wrong across the
+        // wrap point, where 0.98 and 0.02 are neighbours rather than opposites.
+        var x = 0.0, y = 0.0
+        for start in starts {
+            let angle = 2 * Double.pi * (start.truncatingRemainder(dividingBy: beat) / beat)
+            x += cos(angle)
+            y += sin(angle)
+        }
+        guard x != 0 || y != 0 else { return 0 }
+
+        var mean = atan2(y, x)
+        if mean < 0 { mean += 2 * Double.pi }
+        return mean / (2 * Double.pi) * beat
+    }
+
     private static let timeTag = try! NSRegularExpression(
         pattern: #"\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]"#)
     private static let wordTag = try! NSRegularExpression(
@@ -117,7 +172,11 @@ enum LRCParser {
             }
         }
 
-        collected.sort { $0.time < $1.time }
+        // Stable: two lines stamped with the same time keep the file's order.
+        // Swift's sort makes no such promise, so they could swap between runs.
+        collected = collected.enumerated()
+            .sorted { $0.element.time != $1.element.time ? $0.element.time < $1.element.time : $0.offset < $1.offset }
+            .map(\.element)
 
         var lines: [LyricLine] = []
         lines.reserveCapacity(collected.count)
@@ -134,14 +193,19 @@ enum LRCParser {
             // estimated ones, so the highlight still advances word by word.
             let breakdown = tagged.isEmpty
                 ? estimateWords(text: item.text, from: start, to: lineEnd)
-                : (words: tagged, voicedEnd: lineEnd)
+                : (words: markAsides(tagged), voicedEnd: lineEnd)
+            let marked = breakdown.words
+            let voiced = min(lineEnd, max(start + 0.2, breakdown.voicedEnd))
+
             lines.append(LyricLine(
                 id: index,
                 time: start,
                 text: item.text,
-                words: markAsides(breakdown.words),
+                words: marked,
                 end: lineEnd,
-                voicedEnd: min(lineEnd, max(start + 0.2, breakdown.voicedEnd))))
+                leadWords: leadWords(from: marked),
+                asides: asides(from: marked, voicedEnd: voiced),
+                voicedEnd: voiced))
         }
         return lines
     }
@@ -183,40 +247,76 @@ enum LRCParser {
     static func estimateWords(text: String, from start: Double,
                               to end: Double) -> (words: [LyricWord], voicedEnd: Double) {
         let tokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !tokens.isEmpty else { return ([], start) }
         let available = max(0.2, end - start)
 
-        guard tokens.count > 1 else {
-            guard let only = tokens.first else { return ([], start) }
-            let span = min(available, Double(syllables(in: only)) * secondsPerSyllable)
-            return ([LyricWord(time: start, text: only)], start + span)
+        // Classified before anything is timed, because it changes the timing.
+        // A backing vocal in brackets is sung *underneath* the lead, not before
+        // it — "(Play with me) up all night, baby" is one moment, not two. Left
+        // in the same queue as the lead it eats the front of the line and shoves
+        // the words the singer needs a second or more late, which is exactly
+        // what a heavily ad-libbed track looked like.
+        var depth = 0
+        var aside: [Bool] = []
+        for token in tokens {
+            let opens = token.filter { $0 == "(" }.count
+            let closes = token.filter { $0 == ")" }.count
+            aside.append(depth > 0 || opens > 0)
+            depth = max(0, depth + opens - closes)
         }
 
-        let weights = tokens.map { Double(syllables(in: $0)) }
+        let bare = tokens.map {
+            $0.replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+        }
+        let weights = bare.map { Double(max(1, syllables(in: $0))) }
+
+        // Asides are counted like any other word, because they take real time
+        // to sing. The song this was tested against proves it: its ad-lib
+        // appears alone on its own lines, where it occupies 0.245-0.402s per
+        // syllable. Treating it as free — on the theory that a backing vocal is
+        // layered under the lead — implied the singer drawling "bright lights"
+        // across a whole second, and started the lead up to 1.6s before it is
+        // actually sung. That is what "slightly ahead" was.
+        //
+        // `end` is the *next* line's start, so it includes whatever silence
+        // follows. Spreading over all of it makes the highlight crawl behind
+        // the singer through every gap, so the span is capped at a plausible
+        // sung pace and the line finishes early instead of lagging.
         let total = weights.reduce(0, +)
         guard total > 0 else { return ([], start) }
 
-        // `end` is the *next* line's start, so it includes whatever silence
-        // follows this line. Spreading the words over all of it makes the
-        // highlight crawl behind the singer through every gap. Cap the span at a
-        // plausible sung pace and let the line finish early instead of lagging.
         let span = min(available, total * secondsPerSyllable)
         var words: [LyricWord] = []
         words.reserveCapacity(tokens.count)
         var consumed = 0.0
-        for (index, token) in tokens.enumerated() {
-            words.append(LyricWord(time: start + span * (consumed / total), text: token))
+        for index in tokens.indices {
+            words.append(LyricWord(time: start + span * (consumed / total),
+                                   text: bare[index],
+                                   isAside: aside[index]))
             consumed += weights[index]
         }
+
         return (words, start + span)
     }
 
-    /// Roughly three syllables a second, a typical sung pace. Only used to keep a
-    /// line's words off the silence that follows it — raise it if the highlight
-    /// consistently finishes lines early, lower it if it still lags.
-    private static let secondsPerSyllable = 0.33
+    /// The slowest pace still treated as singing rather than silence.
+    ///
+    /// This only caps the sweep when a line's interval is longer than the words
+    /// could plausibly fill — a genuine instrumental gap. For everything else
+    /// the interval to the next line *is* the measurement of how fast it was
+    /// sung, and the sweep should use all of it.
+    ///
+    /// It was 0.33s, which is close to the median pace, so it clipped a quarter
+    /// of all lines: measured over 8,192 back-to-back lines in the local lyric
+    /// cache, 27% were sung slower than that and had their sweep cut short by
+    /// 0.85s on average — the highlight finishing early and sitting ahead of the
+    /// singer, worst on slow or sustained verses. At 0.50s that falls to 8%.
+    ///
+    /// The cost lands on lines that really are followed by a gap, whose sweep
+    /// now runs longer. There are 190 of those against 8,192, so the trade is
+    /// heavily one way.
+    private static let secondsPerSyllable = 0.50
 
-    /// Flags words inside parentheses and removes the brackets themselves.
-    /// Depth-tracked, so "(ooh (yeah) ooh)" stays marked throughout.
     private static func markAsides(_ words: [LyricWord]) -> [LyricWord] {
         var depth = 0
         return words.map { word in
@@ -230,6 +330,44 @@ enum LRCParser {
                 .replacingOccurrences(of: ")", with: "")
             return LyricWord(time: word.time, text: bare, isAside: inside)
         }
+    }
+
+    /// Lead words, trimmed, with their original indices preserved.
+    private static func leadWords(from words: [LyricWord]) -> [LyricLeadWord] {
+        words.enumerated().compactMap { index, word in
+            guard !word.isAside else { return nil }
+            let text = word.text.trimmingCharacters(in: .whitespaces)
+            return text.isEmpty ? nil : LyricLeadWord(id: index, text: text)
+        }
+    }
+
+    /// Contiguous runs of parenthetical words become one floating phrase.
+    private static func asides(from words: [LyricWord], voicedEnd: Double) -> [LyricAside] {
+        var result: [LyricAside] = []
+        var run: [Int] = []
+
+        func flush() {
+            defer { run = [] }
+            guard let first = run.first, let last = run.last else { return }
+            // Trimmed first: word-timed files keep each word's trailing
+            // space, and joining those with another doubled every gap.
+            let text = run.map { words[$0].text.trimmingCharacters(in: .whitespaces) }
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { return }
+
+            let end = last + 1 < words.count ? words[last + 1].time : voicedEnd
+            result.append(LyricAside(id: result.count,
+                                     text: text,
+                                     start: words[first].time,
+                                     end: max(words[first].time + 0.3, end)))
+        }
+
+        for index in words.indices {
+            if words[index].isAside { run.append(index) } else { flush() }
+        }
+        flush()
+        return result
     }
 
     /// Vowel-group count, which is a decent proxy for how long a word is held.

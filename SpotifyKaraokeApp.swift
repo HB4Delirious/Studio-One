@@ -8,15 +8,18 @@ struct SpotifyKaraokeApp: App {
 
     @StateObject private var model = KaraokeModel()
 
+    // Carries the Dock icon swap; see DockIcon.swift.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+
     var body: some Scene {
         // Declared first, so this is what opens at launch: the controls belong on
         // your main display, and the lyrics are opened onto whichever screen you
         // want them on.
         Window("Controls", id: Self.controlsWindowID) {
-            ControlsWindow()
+            BrowserWindow()
                 .environmentObject(model)
         }
-        .defaultSize(width: 820, height: 200)
+        .defaultSize(width: 1180, height: 760)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { }
@@ -39,6 +42,8 @@ struct SpotifyKaraokeApp: App {
         // full screen. WindowGroup defaulted differently, so this only became
         // necessary when the lyrics scene became single-instance.
         .windowResizability(.contentMinSize)
+
+        MenuBarReadout(model: model)
     }
 }
 
@@ -48,8 +53,9 @@ private struct PlaybackCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Playback") {
+            // Given up while lyrics are being tapped out, where Space is the tap.
             Button("Play or pause") { model.togglePlayback() }
-                .keyboardShortcut(.space, modifiers: [])
+                .keyboardShortcut(model.isTimingLyrics ? nil : KeyboardShortcut(.space, modifiers: []))
             Button("Next track") { model.nextTrack() }
                 .keyboardShortcut(.rightArrow, modifiers: [.command])
             Button("Previous track") { model.previousTrack() }
@@ -61,6 +67,8 @@ private struct PlaybackCommands: Commands {
                 .keyboardShortcut("[", modifiers: [])
             Button("Nudge lyrics earlier") { model.offsetMilliseconds += 50 }
                 .keyboardShortcut("]", modifiers: [])
+            Button("Sync: a line starts now") { model.syncToLineNow() }
+                .keyboardShortcut("\\", modifiers: [])
             Button("Reset sync") { model.offsetMilliseconds = 0 }
                 .keyboardShortcut("0", modifiers: [.command])
 
@@ -68,7 +76,7 @@ private struct PlaybackCommands: Commands {
 
             Button("Reload lyrics") { model.reloadLyrics() }
                 .keyboardShortcut("r", modifiers: [.command])
-            Button("Bring Spotify forward") { model.revealSpotify() }
+            Button("Bring \(model.musicSource.displayName) forward") { model.revealPlayer() }
 
             Divider()
 

@@ -10,6 +10,8 @@ enum Credentials {
         case clientID
         case clientSecret
         case songBPM
+        /// Only present after Sign in to Spotify. See `SpotifyAccount`.
+        case spotifyRefreshToken
     }
 
     static var isConfigured: Bool {
@@ -27,14 +29,31 @@ enum Credentials {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Updates in place, and adds only when there is nothing to update.
+    ///
+    /// This used to delete and then add. If the add failed — a locked
+    /// keychain, say — the old value was already gone, and the Spotify refresh
+    /// token is rewritten on every hourly renewal: one bad moment and you were
+    /// signed out. Updating also keeps the item's access settings.
     @discardableResult
     static func write(_ value: String, for key: Key) -> Bool {
-        SecItemDelete(baseQuery(key) as CFDictionary)
-        guard !value.isEmpty else { return true }
-
+        guard !value.isEmpty else {
+            let status = SecItemDelete(baseQuery(key) as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+        let data = Data(value.utf8)
+        let updated = SecItemUpdate(baseQuery(key) as CFDictionary,
+                                    [kSecValueData as String: data] as CFDictionary)
+        if updated == errSecSuccess { return true }
+        guard updated == errSecItemNotFound else {
+            Diagnostics.log("keychain: couldn't update \(key.rawValue) (\(updated))")
+            return false
+        }
         var attributes = baseQuery(key)
-        attributes[kSecValueData as String] = Data(value.utf8)
-        return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
+        attributes[kSecValueData as String] = data
+        let added = SecItemAdd(attributes as CFDictionary, nil)
+        if added != errSecSuccess { Diagnostics.log("keychain: couldn't save \(key.rawValue) (\(added))") }
+        return added == errSecSuccess
     }
 
     private static func baseQuery(_ key: Key) -> [String: Any] {
