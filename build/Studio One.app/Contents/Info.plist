@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Studio One</string>
+	<key>CFBundleExecutable</key>
+	<string>Studio One</string>
+	<key>CFBundleIconFile</key>
+	<string>StudioOne</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.logan.SpotifyKaraoke</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Studio One</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>2.0</string>
+	<key>CFBundleVersion</key>
+	<string>20261010.0810</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Studio One reads the current track and playback position from Spotify and Apple Music to keep the lyrics in sync.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_studioone._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>If you turn on photos in Settings › Recordings, Studio One takes one photo of each singer for their recording.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Studio One lets phones on your Wi-Fi request songs and control playback when you turn on the request line.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The applause meter listens to the room for a few seconds after each song, to score the cheer. If you turn on Recordings, each song sung is recorded from the input you choose.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>StudioOneUpdateRepo</key>
+	<string></string>
+</dict>
+</plist>

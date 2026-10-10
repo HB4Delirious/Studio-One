@@ -1,0 +1,427 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+		0870BD4319C39DE85C316326 /* RemoteStore.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 9CC83F8F662F0D02FA5C7B0B /* RemoteStore.swift */; };
+		0917280FE8AC27A5005FD13B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BC1BAA2DFA1C45369AA6AC43 /* StudioOneRemoteWidgets */;
+			targetProxy = AB8DB7A3EBF27F7939DE1374 /* PBXContainerItemProxy */;
+		};
+		2179A629A0C4674915156ECB /* App Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7175864D0BF53970F602F3C3,
+				6C0E534506B72F76F185C97C,
+				F70875F39776A1A15F624540,
+				6A931E3EB9E3BAB094721E0F,
+				0870BD4319C39DE85C316326,
+				6480D007E95135044102AB9B,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2A44C54E23411059C3A1A1E1 /*  */ = {
+			isa = PBXGroup;
+			children = (
+				AC6545EDE5A39074A15E6244,
+				7CA040A2C43A6335A5F98448,
+				51B141E1E5C40FEE5FD5E5B6,
+				58CB362836FE0E8A7A4433AF,
+				C863DA5204F95EC573510473,
+			);
+			name = "";
+			sourceTree = "<group>";
+		};
+		37C5B90E0F90B00EBF7AA727 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = CLFMJM5GY3;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Config/Widgets-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "\"$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks\"";
+				MARKETING_VERSION = 2.0;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.logan.studioone.remote.widgets;
+				PRODUCT_NAME = StudioOneRemoteWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		3CECC98AB355DDE51B4ADA07 /* App Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5FBEBE876FB71610665E1A3D,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3D1F2EC227B6ED06C6BA11FB /* StudioOneRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudioOneRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3FA1CCC6489A00D47AEA8645 /* RemoteShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RemoteShared.swift; path = Shared/RemoteShared.swift; sourceTree = "<group>"; };
+		51B141E1E5C40FEE5FD5E5B6 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				3FA1CCC6489A00D47AEA8645,
+			);
+			name = Shared;
+			sourceTree = "<group>";
+		};
+		55CA31A7752D82DB99424DD5 /* QueueAndSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = QueueAndSearch.swift; path = App/QueueAndSearch.swift; sourceTree = "<group>"; };
+		58CB362836FE0E8A7A4433AF /* Supporting Files */ = {
+			isa = PBXGroup;
+			children = (
+				8096DFAB40B7362DCEED29FB,
+				EC93ECD26A5D01CCC675E29B,
+				AF603615244EE3DE756E3EA2,
+			);
+			name = "Supporting Files";
+			sourceTree = "<group>";
+		};
+		5997AE2C800F9D7F4F612511 /* Widget Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5FBEBE876FB71610665E1A3D /* Assets.xcassets in App Resources */ = {isa = PBXBuildFile; fileRef = E8B24C4909399FD5368ED608 /* Assets.xcassets */; };
+		6480D007E95135044102AB9B /* RemoteShared.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 3FA1CCC6489A00D47AEA8645 /* RemoteShared.swift */; };
+		6861DDE41C3AE276A3BE85BA /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			name = "Embed Foundation Extensions";
+			files = (
+				861D593F79ED710C461CD003,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6A931E3EB9E3BAB094721E0F /* RemoteApp.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 8A660F4C6C1835CB345E875E /* RemoteApp.swift */; };
+		6BC834DBF9D213CB958A0647 /* RemoteWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RemoteWidgets.swift; path = Widgets/RemoteWidgets.swift; sourceTree = "<group>"; };
+		6C0E534506B72F76F185C97C /* PairView.swift in App Sources */ = {isa = PBXBuildFile; fileRef = A1F878752A4607F9976B743E /* PairView.swift */; };
+		7087FCF1AD3F987A6F30C332 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = CLFMJM5GY3;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "\"$(inherited) @executable_path/Frameworks\"";
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.logan.studioone.remote;
+				PRODUCT_NAME = StudioOneRemote;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		7175864D0BF53970F602F3C3 /* NowPlayingView.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 7AD56324DDFFF86008C07D11 /* NowPlayingView.swift */; };
+		7AD56324DDFFF86008C07D11 /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NowPlayingView.swift; path = App/NowPlayingView.swift; sourceTree = "<group>"; };
+		7CA040A2C43A6335A5F98448 /* Widgets */ = {
+			isa = PBXGroup;
+			children = (
+				6BC834DBF9D213CB958A0647,
+			);
+			name = Widgets;
+			sourceTree = "<group>";
+		};
+		8096DFAB40B7362DCEED29FB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = Config/Info.plist; sourceTree = "<group>"; };
+		84D8BD85BF4AD3BB35C1CF93 /* Build configuration list for widgets */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				37C5B90E0F90B00EBF7AA727 /* Debug */,
+				A6B56CF6D10AB35C6DD54080 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		861D593F79ED710C461CD003 /* product:StudioOneRemoteWidgets in Embed */ = {isa = PBXBuildFile; fileRef = DBF0D306F0AE11986D977827 /* product:StudioOneRemoteWidgets */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		887D4B5F61EA6AAAF609F3AC /* Build configuration list for project */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1FEF218C4C57CE118AD5A8A /* Debug */,
+				D49EF4AC7029FD1A8C1140E0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8A660F4C6C1835CB345E875E /* RemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RemoteApp.swift; path = App/RemoteApp.swift; sourceTree = "<group>"; };
+		8DE1BF2FE2FF2F8944E5E1BC /* App Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8F7618E60DE435313D4ADD16 /* RemoteShared.swift in Widget Sources */ = {isa = PBXBuildFile; fileRef = 3FA1CCC6489A00D47AEA8645 /* RemoteShared.swift */; };
+		90B20E0A53B92A841F62ECEC /* StudioOneRemote */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C57B8E19E49BC7C33EC0693D;
+			buildPhases = (
+				2179A629A0C4674915156ECB,
+				8DE1BF2FE2FF2F8944E5E1BC,
+				3CECC98AB355DDE51B4ADA07,
+				6861DDE41C3AE276A3BE85BA,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0917280FE8AC27A5005FD13B,
+			);
+			name = StudioOneRemote;
+			productName = StudioOneRemote;
+			productReference = 3D1F2EC227B6ED06C6BA11FB;
+			productType = "com.apple.product-type.application";
+		};
+		913F4145246436745DAD7ED8 /* Widget Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9CC83F8F662F0D02FA5C7B0B /* RemoteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RemoteStore.swift; path = App/RemoteStore.swift; sourceTree = "<group>"; };
+		A1F878752A4607F9976B743E /* PairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PairView.swift; path = App/PairView.swift; sourceTree = "<group>"; };
+		A1FEF218C4C57CE118AD5A8A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = CLFMJM5GY3;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 2.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A6B56CF6D10AB35C6DD54080 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = CLFMJM5GY3;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Config/Widgets-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "\"$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks\"";
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.logan.studioone.remote.widgets;
+				PRODUCT_NAME = StudioOneRemoteWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AB8DB7A3EBF27F7939DE1374 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B8FB33B3303F13757FF006FE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BC1BAA2DFA1C45369AA6AC43;
+			remoteInfo = StudioOneRemoteWidgets;
+		};
+		AC6545EDE5A39074A15E6244 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				7AD56324DDFFF86008C07D11,
+				A1F878752A4607F9976B743E,
+				55CA31A7752D82DB99424DD5,
+				8A660F4C6C1835CB345E875E,
+				9CC83F8F662F0D02FA5C7B0B,
+				E8B24C4909399FD5368ED608,
+			);
+			name = App;
+			sourceTree = "<group>";
+		};
+		AF603615244EE3DE756E3EA2 /* make-xcodeproj.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; name = "make-xcodeproj.py"; path = "make-xcodeproj.py"; sourceTree = "<group>"; };
+		B8FB33B3303F13757FF006FE /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 887D4B5F61EA6AAAF609F3AC;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 2A44C54E23411059C3A1A1E1;
+			productRefGroup = C863DA5204F95EC573510473;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				90B20E0A53B92A841F62ECEC,
+				BC1BAA2DFA1C45369AA6AC43,
+			);
+		};
+		BC1BAA2DFA1C45369AA6AC43 /* StudioOneRemoteWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 84D8BD85BF4AD3BB35C1CF93;
+			buildPhases = (
+				F6EC4B7B6CDE800FB7DE4DCE,
+				913F4145246436745DAD7ED8,
+				5997AE2C800F9D7F4F612511,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = StudioOneRemoteWidgets;
+			productName = StudioOneRemoteWidgets;
+			productReference = DBF0D306F0AE11986D977827;
+			productType = "com.apple.product-type.app-extension";
+		};
+		C57B8E19E49BC7C33EC0693D /* Build configuration list for app */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F81D34D9EA971A5EDC4B315B /* Debug */,
+				7087FCF1AD3F987A6F30C332 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C863DA5204F95EC573510473 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3D1F2EC227B6ED06C6BA11FB,
+				DBF0D306F0AE11986D977827,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D383D69B277874038EFACBEF /* RemoteWidgets.swift in Widget Sources */ = {isa = PBXBuildFile; fileRef = 6BC834DBF9D213CB958A0647 /* RemoteWidgets.swift */; };
+		D49EF4AC7029FD1A8C1140E0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = CLFMJM5GY3;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 2.0;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		DBF0D306F0AE11986D977827 /* StudioOneRemoteWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = StudioOneRemoteWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E8B24C4909399FD5368ED608 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = App/Assets.xcassets; sourceTree = "<group>"; };
+		EC93ECD26A5D01CCC675E29B /* Widgets-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "Widgets-Info.plist"; path = "Config/Widgets-Info.plist"; sourceTree = "<group>"; };
+		F6EC4B7B6CDE800FB7DE4DCE /* Widget Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D383D69B277874038EFACBEF,
+				8F7618E60DE435313D4ADD16,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F70875F39776A1A15F624540 /* QueueAndSearch.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 55CA31A7752D82DB99424DD5 /* QueueAndSearch.swift */; };
+		F81D34D9EA971A5EDC4B315B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = CLFMJM5GY3;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "\"$(inherited) @executable_path/Frameworks\"";
+				MARKETING_VERSION = 2.0;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.logan.studioone.remote;
+				PRODUCT_NAME = StudioOneRemote;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+	};
+	rootObject = B8FB33B3303F13757FF006FE /* Project object */;
+}
