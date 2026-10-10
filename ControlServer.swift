@@ -2,25 +2,18 @@ import AppKit
 import Network
 
 extension Notification.Name {
-    /// Asks the controls window to open (or bring forward) the lyrics window.
-    /// `openWindow` only exists inside SwiftUI views, so anything outside one —
-    /// the Stream Deck, here — has to ask a view to do it.
+    /// Asks the Controls window to open the lyrics window — only a view can.
     static let showLyricsWindow = Notification.Name("StudioOne.showLyricsWindow")
 }
 
-/// A control port for the Stream Deck plug-in, reachable only from this Mac.
+/// The Stream Deck plug-in's way in: always on, on 127.0.0.1 only, and only
+/// for requests carrying the token.
 ///
-/// The guest request line already speaks HTTP, but it only runs while a session
-/// is open and only for Apple Music, and it is built for phones on the Wi-Fi.
-/// This one is always on, listens on 127.0.0.1 alone, and answers only requests
-/// carrying a token.
-///
-/// The token matters even on the loopback address, because a web page in any
-/// browser on this Mac can send requests to 127.0.0.1. A custom header cannot
-/// be attached to a cross-site request without the browser first asking
-/// permission, which this server never grants, so a page can't drive playback.
-/// The token and the port are written to a file only this user can read; the
-/// plug-in reads them from there, so there is nothing to type in.
+/// The token matters even on loopback — any web page can send requests to
+/// 127.0.0.1 — and since it travels in a custom header, which a cross-site
+/// request can't carry without a preflight this server never answers, a page
+/// can't drive playback. The port and token are in a file only this user can
+/// read, where the plug-in finds them.
 @MainActor
 final class ControlServer {
 
@@ -43,8 +36,8 @@ final class ControlServer {
     private let queue = DispatchQueue(label: "com.logan.SpotifyKaraoke.control")
     private lazy var token: String = existingToken() ?? Self.makeToken()
 
-    /// Reading the volume is an Apple Event round trip. The deck polls twice a
-    /// second, so the value is cached and refreshed in the background instead.
+    /// Cached and refreshed in the background: the deck polls twice a second,
+    /// and each read is an Apple Event.
     private var volume: Int?
     private var volumeFetchedAt = Date.distantPast
     private var mutedFrom: Int?
@@ -100,17 +93,12 @@ final class ControlServer {
 
     // MARK: - MIDI lane
 
-    /// A datagram port for the Stream Deck's dial ticks, beside the control port.
+    /// A datagram port for the dials' ticks: no connection, no reply, and put
+    /// on the MIDI port from the network thread as it lands — under 1 ms,
+    /// where an HTTP request per tick could take 40.
     ///
-    /// Over the control port every tick opened a connection, waited for the
-    /// main thread and carried back the whole state: 3 ms typically, 40 ms at
-    /// worst with the app idle, and worse with lyrics on screen — a fader that
-    /// visibly trails the hand. A datagram needs no connection and no reply,
-    /// and is put on the MIDI port from the network thread as it lands.
-    ///
-    /// One datagram is the token, a newline, the three bytes of a controller
-    /// message, then an optional label for the "Last sent" line. Only
-    /// controller messages are accepted, and only with the token.
+    /// A datagram is the token, a newline, a controller message's three bytes,
+    /// then an optional label for "Last sent".
     private func startMIDILane() async {
         guard midiListener == nil else { return }
         let token = Data(self.token.utf8)
@@ -166,62 +154,19 @@ final class ControlServer {
 
     private func accept(_ connection: NWConnection) {
         connection.start(queue: queue)
-        receive(on: connection, buffer: Data())
-    }
-
-    private func receive(on connection: NWConnection, buffer: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, done, error in
-            var buffer = buffer
-            if let data { buffer.append(data) }
-            Task { @MainActor in
-                guard let self else { return }
-                if let request = Self.parse(buffer) {
-                    await self.respond(to: request, on: connection)
-                } else if done || error != nil || buffer.count > 65_536 {
-                    connection.cancel()
-                } else {
-                    self.receive(on: connection, buffer: buffer)
-                }
-            }
+        LocalHTTP.receive(on: connection, limit: 65_536) { [weak self] request in
+            Task { @MainActor in await self?.respond(to: request, on: connection) }
         }
     }
 
-    struct Request {
-        let method: String
-        let path: String
-        let headers: [String: String]
-        let body: Data
-    }
-
-    /// Nil until the whole request, body included, has arrived.
-    static func parse(_ data: Data) -> Request? {
-        guard let split = data.range(of: Data("\r\n\r\n".utf8)),
-              let head = String(data: data[..<split.lowerBound], encoding: .utf8) else { return nil }
-        let lines = head.components(separatedBy: "\r\n")
-        let parts = lines.first?.split(separator: " ") ?? []
-        guard parts.count >= 2 else { return nil }
-        var headers: [String: String] = [:]
-        for line in lines.dropFirst() {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            headers[line[..<colon].lowercased()] = line[line.index(after: colon)...]
-                .trimmingCharacters(in: .whitespaces)
-        }
-        let length = Int(headers["content-length"] ?? "0") ?? 0
-        let body = data[split.upperBound...]
-        guard body.count >= length else { return nil }
-        return Request(method: String(parts[0]), path: String(parts[1]),
-                       headers: headers, body: Data(body.prefix(length)))
-    }
-
-    private func respond(to request: Request, on connection: NWConnection) async {
+    private func respond(to request: LocalHTTP.Request, on connection: NWConnection) async {
         guard request.headers["x-studio-one-token"] == token else {
             return send(401, json: ["error": "bad token"], on: connection)
         }
         switch (request.method, request.path) {
         case ("GET", "/controls"):
-            // What the Stream Deck's dials can be pointed at, for its settings list.
-            // The channel travels with each control so the Stream Deck can send
-            // the same message itself when this app isn't running.
+            // What the dials can be pointed at, with the channel, so the deck
+            // can send the same messages itself while this app is closed.
             send(200, json: ["channel": Int(MixerControl.channel) + 1,
                              "step": MixerControl.step.rawValue,
                              "controls": MixerControl.all.map {
@@ -249,16 +194,11 @@ final class ControlServer {
     }
 
     private func send(_ status: Int, json: [String: Any], on connection: NWConnection) {
-        let body = (try? JSONSerialization.data(withJSONObject: json)) ?? Data("{}".utf8)
-        send(status, type: "application/json", body: body, on: connection)
+        LocalHTTP.respond(status, json: json, on: connection)
     }
 
     private func send(_ status: Int, type: String, body: Data, on connection: NWConnection) {
-        let reason = [200: "OK", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found"][status] ?? "OK"
-        let head = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
-        connection.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+        LocalHTTP.respond(status, type: type, body: body, on: connection)
     }
 
     // MARK: - State
@@ -275,7 +215,7 @@ final class ControlServer {
             "playing": model.isPlaying,
             "position": model.playbackPosition,
             "lyricOffsetMs": model.offsetMilliseconds,
-            "fontSize": UserDefaults.standard.object(forKey: "lyricFontSize") as? Double ?? 42,
+            "fontSize": LyricSize.current,
             "tempoMultiplier": model.tempoMultiplier,
             "keyIsManual": model.manualKey != nil,
             "tempoIsManual": model.manualTempo != nil,
@@ -324,6 +264,7 @@ final class ControlServer {
         case "playPause":    model.togglePlayback()
         case "next":         model.nextTrack()
         case "previous":     model.previousTrack()
+        case "fadeOut":      model.fadeOut()
         case "seekBy":
             let length = model.track?.duration ?? 0
             model.seek(to: min(max(0, model.playbackPosition + amount), max(0, length - 1)))
@@ -343,10 +284,9 @@ final class ControlServer {
         case "syncNow":      model.syncToLineNow()
 
         case "fontBy":
-            let current = UserDefaults.standard.object(forKey: "lyricFontSize") as? Double ?? 42
-            UserDefaults.standard.set(min(96, max(24, current + amount)), forKey: "lyricFontSize")
+            UserDefaults.standard.set(LyricSize.clamped(LyricSize.current + amount), forKey: LyricSize.key)
         case "fontReset":
-            UserDefaults.standard.set(42.0, forKey: "lyricFontSize")
+            UserDefaults.standard.set(LyricSize.standard, forKey: LyricSize.key)
 
         case "volumeBy", "volumeMute":
             guard let browser = model.browser else { return "no volume on this source" }
@@ -359,9 +299,8 @@ final class ControlServer {
             } else {
                 target = min(100, max(0, current + Int(amount)))
             }
-            // Recorded before the wait, not after: a dial spun quickly sends
-            // the next tick while this one is still with the player, and it
-            // read the old value and set the same level again.
+            // Recorded before the wait: the next tick of a fast dial arrives
+            // while this one is still with the player.
             volume = target
             volumeFetchedAt = Date()
             await browser.setVolume(target)
@@ -384,7 +323,7 @@ final class ControlServer {
             guard UserDefaults.standard.bool(forKey: MIDIBridge.enabledKey) else {
                 return "MIDI to Logic is off in Settings"
             }
-            MIDIBridge.shared.publish(model.publishedAnalysis)
+            model.publishToLogic()
 
         case "mixerBy":
             guard let control = MixerControl.named((amountControl ?? "")), control.kind == .dial else {
@@ -421,37 +360,14 @@ final class ControlServer {
 
     // MARK: - Artwork
 
-    /// 144 px square PNG — a Stream Deck key's full resolution — cached per
-    /// track, since the key only needs a new picture when the song changes.
+    /// A 144 px PNG — a key's full resolution — cached per song.
     private func currentArtwork() async -> Data? {
         guard let model, let track = model.track else { return nil }
         if let artwork, artwork.track == track.uri { return artwork.data }
-
-        var image: NSImage? = model.localArtwork
-        if image == nil, let url = track.artworkURL,
-           let (data, _) = try? await URLSession.shared.data(from: url) {
-            image = NSImage(data: data)
-        }
-        guard let image, let png = Self.squarePNG(image, side: 144) else { return nil }
+        guard let png = await model.coverImage()?.squarePNG(side: 144),
+              model.track?.uri == track.uri else { return nil }
         artwork = (track.uri, png)
         return png
-    }
-
-    static func squarePNG(_ image: NSImage, side: Int) -> Data? {
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
-                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
-                                         isPlanar: false, colorSpaceName: .deviceRGB,
-                                         bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        // Fill, not fit: crop the long side so the key has no bars.
-        let size = image.size
-        let crop = min(size.width, size.height)
-        let source = NSRect(x: (size.width - crop) / 2, y: (size.height - crop) / 2, width: crop, height: crop)
-        image.draw(in: NSRect(x: 0, y: 0, width: side, height: side), from: source,
-                   operation: .copy, fraction: 1)
-        NSGraphicsContext.restoreGraphicsState()
-        return rep.representation(using: .png, properties: [:])
     }
 
     // MARK: - Token file
@@ -464,8 +380,7 @@ final class ControlServer {
         var info: [String: Any] = ["port": Int(port), "token": token]
         if let midiPort { info["midiPort"] = Int(midiPort) }
         guard let data = try? JSONSerialization.data(withJSONObject: info) else { return }
-        // Owner read/write only: the token is what stops anything else on this
-        // Mac from driving playback through the port.
+        // Owner only: the token is what keeps others off the port.
         FileManager.default.createFile(atPath: url.path, contents: data,
                                        attributes: [.posixPermissions: 0o600])
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)

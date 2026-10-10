@@ -205,7 +205,7 @@ app_target_settings = {
     "ENABLE_HARDENED_RUNTIME": "YES",
     "ENABLE_APP_SANDBOX": "NO",
     "COMBINE_HIDPI_IMAGES": "YES",
-    "MARKETING_VERSION": "1.0",
+    "MARKETING_VERSION": "2.0",
     "CURRENT_PROJECT_VERSION": "1",
     "LD_RUNPATH_SEARCH_PATHS": '"$(inherited) @executable_path/../Frameworks"',
 }

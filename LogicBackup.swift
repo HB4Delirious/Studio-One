@@ -19,11 +19,12 @@ enum LogicBackup {
         return url
     }()
 
-    static let logicBundleID = "com.apple.logic10"
+    /// Logic Pro, and Logic Pro Creator Studio, which has an ID of its own.
+    static let logicBundleIDs: Set<String> = ["com.apple.logic10", "com.apple.mobilelogic"]
     private static let keep = 30
 
     static var logicIsRunning: Bool {
-        !NSRunningApplication.runningApplications(withBundleIdentifier: logicBundleID).isEmpty
+        NSWorkspace.shared.runningApplications.contains { logicBundleIDs.contains($0.bundleIdentifier ?? "") }
     }
 
     static var sourceExists: Bool { FileManager.default.fileExists(atPath: source.path) }

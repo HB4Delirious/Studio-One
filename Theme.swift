@@ -6,9 +6,26 @@ enum Theme {
     static let backdrop = Color(red: 0.043, green: 0.039, blue: 0.078)   // #0B0A14
     static let panel = Color(red: 0.086, green: 0.082, blue: 0.137)      // #161523
     static let upcoming = Color(red: 0.42, green: 0.42, blue: 0.53)      // dim slate
-    static let sung = Color(red: 1.0, green: 0.76, blue: 0.29)           // #FFC24B amber
-    static let cue = Color(red: 0.37, green: 0.88, blue: 0.82)           // #5EE0D0 cyan
+    /// The sung word (#FFC24B amber) and the cue (#5EE0D0 cyan), unless the
+    /// venue's theme says otherwise (see `VenueTheme`).
+    static var sung: Color { VenueLook.current.sung }
+    static var cue: Color { VenueLook.current.cue }
+    /// The typeface on the room's screens, from the venue's theme.
+    static var stageDesign: Font.Design { VenueLook.current.design }
     static let hairline = Color.white.opacity(0.07)
+    /// Secondary text in the window's chrome. Brighter than `upcoming`, which
+    /// is tuned for lyrics on the dark stage: it reads on glass over any cover.
+    static let secondary = Color.white.opacity(0.62)
+
+    /// A duet's parts as they're sung: the first singer amber like any lead,
+    /// the second cyan, both together pink.
+    static func part(_ part: LyricPart?) -> Color {
+        switch part {
+        case .second: return cue
+        case .both:   return Color(red: 0.91, green: 0.22, blue: 0.56)   // #E8388F
+        default:      return sung
+        }
+    }
 
     /// Third visualizer field colour. Only ever appears in the background —
     /// the sung word stays the one saturated thing in the foreground.
@@ -16,7 +33,7 @@ enum Theme {
 
     /// Heavy and rounded: reads at a distance and doesn't look like body copy.
     static func lyric(_ size: CGFloat, active: Bool) -> Font {
-        .system(size: size, weight: active ? .heavy : .semibold, design: .rounded)
+        .system(size: size, weight: active ? .heavy : .semibold, design: stageDesign)
     }
 
     static let timecode = Font.system(size: 11, weight: .medium, design: .monospaced)

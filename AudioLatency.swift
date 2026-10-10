@@ -3,14 +3,10 @@ import CoreAudio
 
 /// Reads how far behind the current output device actually is.
 ///
-/// Spotify reports where the playhead is, but that is not what has reached your
-/// ears yet: the audio still has to cross the device buffer, and over Bluetooth
-/// that is 150–200 ms. The handoff notes call this out as latency "the app can't
-/// see" — but CoreAudio does publish it, so it can be compensated automatically
-/// instead of being dialled in by hand.
-///
-/// This covers the *device*. It cannot know that a particular LRC file was
-/// mastered against a different release — nothing can, without hearing the audio.
+/// The player reports where the playhead is, not what has reached the ears:
+/// the audio still crosses the device's buffer, 150–200 ms over Bluetooth.
+/// CoreAudio publishes that delay, so it's taken off automatically. (A lyric
+/// file timed against another release is the sync trim's job.)
 enum AudioLatency {
 
     /// Measured away from the main thread — CoreAudio property reads can stall

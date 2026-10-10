@@ -6,16 +6,10 @@ import Foundation
 /// assignment at a numbered channel strip rather than "whatever is selected" —
 /// so a dial can own Mic RED whatever you happen to be clicking on.
 ///
-/// **Dials send steps, not positions.** A position would have to be a value
-/// this app invents, and Logic's Pickup mode ignores a controller until it
-/// reaches the parameter's current value — the same thing that stopped key
-/// changes reaching Waves Tune. A step says "up one" and Logic moves the fader
-/// from wherever it is, which needs no knowledge of where that was and can't
-/// jump. The cost is that nothing here can know a fader's real position, so the
-/// dials show what they have sent rather than what Logic holds.
-///
-/// Controller numbers live in 30–49, clear of the key (20, 21), the tempo pair
-/// (22, 54) and MetaTune's note switches (102–113).
+/// **Dials send steps, not positions.** A position would be a value this app
+/// invents, and Pickup mode ignores it until it reaches the parameter's own; a
+/// step moves the fader from wherever it is, and can't jump. The cost: the
+/// dials show what they sent, not where Logic's faders are.
 struct MixerControl: Identifiable, Hashable {
 
     enum Kind: String { case dial, button }
@@ -30,11 +24,8 @@ struct MixerControl: Identifiable, Hashable {
     /// Level, Send A, Send B, four plug-in parameters, Mute.
     static let perMic = 8
 
-    /// Channel 16, alone. The key, the scale and MetaTune's note switches use
-    /// channels 1–4 with their own controller numbers; putting the mixer on a
-    /// channel of its own means the two sets can never collide however many
-    /// mics or plug-in parameters get added. Logic tells channels apart, so an
-    /// assignment learned here is unambiguous.
+    /// Channel 16, apart from the tuners' 1–4, so the two can't collide
+    /// however many mics or controls are added. CC 30 up, eight per mic.
     static let channel: UInt8 = 15
 
     /// One set per mic, following "Mics with a tuner" in Settings.

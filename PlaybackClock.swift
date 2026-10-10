@@ -1,12 +1,10 @@
 import Foundation
 import QuartzCore
 
-/// Keeps a smooth, high-resolution estimate of Spotify's playback position.
-///
-/// Asking Spotify for `player position` over Apple Events costs ~10-20 ms and we only
-/// do it a couple of times a second. In between, we run a free-wheeling clock anchored
-/// to the last known-good sample. Each new sample nudges the clock back toward truth
-/// instead of snapping it, so the lyrics never visibly stutter.
+/// A smooth estimate of the player's position between polls. Asking costs an
+/// Apple Event, so it's asked twice a second and a free-running clock fills
+/// in; each new reading nudges it back towards the truth rather than snapping,
+/// so the lyrics never visibly stutter.
 final class PlaybackClock {
 
     /// Anything larger than this is a seek or a track change, not drift. Snap immediately.
@@ -32,11 +30,11 @@ final class PlaybackClock {
         isPlaying = playing
     }
 
-    /// Feed in a fresh reading from Spotify.
+    /// A fresh reading from the player.
     /// - Parameters:
-    ///   - sample: position reported by Spotify, in seconds
-    ///   - sampledAt: `CACurrentMediaTime()` at the midpoint of the Apple Event round trip
-    ///   - playing: whether Spotify reported itself as playing
+    ///   - sample: the reported position, in seconds
+    ///   - sampledAt: `CACurrentMediaTime()` at the middle of the Apple Event round trip
+    ///   - playing: whether the player said it was playing
     func ingest(sample: Double, sampledAt: CFTimeInterval, playing: Bool) {
         let now = CACurrentMediaTime()
 

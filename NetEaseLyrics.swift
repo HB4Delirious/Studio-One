@@ -3,12 +3,10 @@ import Foundation
 /// NetEase Cloud Music as a second lyrics source, used only when LRCLIB has
 /// nothing timed.
 ///
-/// Its catalogue reaches well into Western music and often carries timing
-/// word by word ("yrc"), not just line by line — checked against Duran Duran
-/// and Toto. The endpoints are the ones its own web player and long-standing
-/// lyric apps use; they are not a published API, so they could change without
-/// notice. Everything here fails quietly to "nothing found" if they do, and
-/// the source can be switched off in Settings › Display.
+/// Its catalogue reaches well into Western music, often timed word by word
+/// ("yrc"). The endpoints are its web player's, not a published API, so they
+/// may change; everything fails quietly to "nothing found", and the source can
+/// be switched off in Settings › Display.
 enum NetEaseLyrics {
 
     static let enabledKey = "lyricsNetEase"
@@ -81,13 +79,9 @@ enum NetEaseLyrics {
         !words(a).isDisjoint(with: words(b))
     }
 
-    /// Its own session, with no cookies. NetEase sets one on the first
-    /// request, and once a client sends it back its search answers with
-    /// unrelated filler — Chinese pop hits for "Africa TOTO". Found when a
-    /// second lookup in the same run failed; a cookie-free session got the
-    /// right song every time. The shared session keeps cookies.
-    /// (Ephemeral alone isn't enough: it still keeps cookies in memory for
-    /// its own lifetime, so the second song in a session failed.)
+    /// A session that never stores or sends cookies (ephemeral alone keeps them
+    /// in memory): once NetEase's cookie is sent back, its search answers with
+    /// unrelated filler.
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil

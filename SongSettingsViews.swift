@@ -10,11 +10,11 @@ struct SongSettingsPopover: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("This song's settings").font(.system(size: 14, weight: .semibold))
             Text(model.track?.name ?? "Nothing playing")
-                .font(.system(size: 11)).foregroundStyle(Theme.upcoming).lineLimit(1)
+                .font(.system(size: 11)).foregroundStyle(Theme.secondary).lineLimit(1)
 
             if SongControl.active.isEmpty {
-                Text("Nothing set up yet. Name the plug-in controls you want to change per song in Settings › Logic › Per-song settings, and learn each one in Logic.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.upcoming)
+                Text("Nothing set up yet. Name the plug-in controls you want to change per song in Settings › Mixer & songs, and learn each one in Logic.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 ForEach(SongControl.active, id: \.self) { slot in
@@ -23,7 +23,7 @@ struct SongSettingsPopover: View {
                 Text(midiEnabled
                      ? "Saved for this song and sent each time it starts. Songs you haven't set use the default."
                      : "Turn on “Send key and tempo as MIDI” in Settings › Logic for these to reach Logic.")
-                    .font(.system(size: 11)).foregroundStyle(Theme.upcoming)
+                    .font(.system(size: 11)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -40,7 +40,7 @@ struct SongSettingsPopover: View {
                 Text(current.value.map(String.init) ?? "—")
                     .font(.system(size: 12, weight: .semibold)).monospacedDigit()
                 Text(current.isOwn ? "this song" : "default")
-                    .font(.system(size: 10)).foregroundStyle(Theme.upcoming)
+                    .font(.system(size: 10)).foregroundStyle(Theme.secondary)
                     .frame(width: 52, alignment: .leading)
             }
             HStack(spacing: 8) {
@@ -58,29 +58,32 @@ struct SongSettingsPopover: View {
     }
 }
 
-/// Settings › Logic: naming the song controls, their defaults, and Learn.
+/// Settings › Mixer & songs: naming the song controls, their defaults, and
+/// Learn — the controls in use, and a button for another, rather than eight
+/// rows of "Unused".
 struct SongControlSettings: View {
-    @AppStorage(MIDIBridge.enabledKey) private var midiEnabled = false
     @State private var names = SongControl.names
     @State private var defaults: [String] = (0..<SongControl.count).map {
         SongControl.defaultValue($0).map(String.init) ?? ""
     }
+    /// The slots on show: those named, and any just added and not yet named.
+    @State private var shown: [Int] = SongControl.active
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("PER-SONG SETTINGS").font(Theme.label).foregroundStyle(Theme.upcoming)
-            Text("Plug-in settings that change with the song — MetaTune's retune speed or humanize, a reverb send. Name a control, press Learn with Logic's Controller Assignments in Learn Mode and the parameter touched, then set values per song from the sliders button in the Controls window. Each is sent as the song starts, on channel \(SongControl.channel + 1). Leave a default empty to send nothing for songs without their own value.")
-                .font(.system(size: 11, design: .rounded))
-                .foregroundStyle(Theme.upcoming)
-                .fixedSize(horizontal: false, vertical: true)
-
-            ForEach(0..<SongControl.count, id: \.self) { slot in
+        SettingsSection("Per-song settings", info: "Plug-in settings that change with the song — MetaTune's retune speed or humanize, a reverb send. Name a control, press Learn with Logic's Controller Assignments in Learn Mode and the parameter touched, then set values per song from Song Settings in the Controls window. Each is sent as the song starts, on channel \(SongControl.channel + 1). Leave a default empty to send nothing for songs without their own value.") {
+            if shown.isEmpty {
+                Text("None yet. Add a plug-in control to set per song — MetaTune's retune speed, a reverb send.")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(Theme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(shown, id: \.self) { slot in
                 HStack(spacing: 6) {
                     Text("CC \(SongControl.cc(slot))")
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Theme.upcoming)
+                        .foregroundStyle(Theme.secondary)
                         .frame(width: 40, alignment: .leading)
-                    TextField("Unused", text: $names[slot])
+                    TextField("Name, e.g. Retune speed", text: $names[slot])
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 200)
                         .onChange(of: names[slot]) { _, _ in SongControl.names = names }
@@ -96,29 +99,43 @@ struct SongControlSettings: View {
                             slot: slot, settle: Int(defaults[slot]) ?? 64)
                     }
                     .disabled(names[slot].trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button { remove(slot) } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                        .help("Stop using this control")
                 }
                 .controlSize(.small)
             }
+            if let next = (0..<SongControl.count).first(where: { !shown.contains($0) }) {
+                Button { shown.append(next) } label: {
+                    Label("Add Control", systemImage: "plus.circle")
+                }
+                .controlSize(.small)
+                .help("CC \(SongControl.cc(next)) on channel \(SongControl.channel + 1)")
+            }
         }
-        .disabled(!midiEnabled)
+    }
+
+    /// Back to unused: no name, no default. Values set for songs stay, in
+    /// case it's added back under the same number.
+    private func remove(_ slot: Int) {
+        names[slot] = ""
+        defaults[slot] = ""
+        SongControl.names = names
+        SongControl.setDefault(nil, slot: slot)
+        shown.removeAll { $0 == slot }
     }
 }
 
-/// Settings › Logic: copies of Logic's controller assignments.
+/// Settings › Rig check: copies of Logic's controller assignments.
 struct LogicBackupSettings: View {
     @State private var backups = LogicBackup.backups()
     @State private var message: String?
     @State private var pendingRestore: URL?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("LOGIC'S ASSIGNMENTS").font(Theme.label).foregroundStyle(Theme.upcoming)
-            Text("Everything learned in Logic — key, MetaTune's switches, the dials, the song settings — lives in one file that a reset or a new Mac loses. Studio One copies it each time it starts, whenever it has changed, and keeps the last thirty. Logic writes the file when it quits, so quit Logic before backing up to catch the latest.")
-                .font(.system(size: 11, design: .rounded))
-                .foregroundStyle(Theme.upcoming)
-                .fixedSize(horizontal: false, vertical: true)
+        SettingsSection("Logic's assignments", info: "Everything learned in Logic — key, MetaTune's switches, the dials, the song settings — lives in one file that a reset or a new Mac loses. Studio One copies it each time it starts, whenever it has changed, and keeps the last thirty. Logic writes the file when it quits, so quit Logic before backing up to catch the latest.") {
             HStack(spacing: 8) {
-                Button("Back up now") {
+                Button("Back Up Now") {
                     message = LogicBackup.backUp() ?? "Backed up."
                     backups = LogicBackup.backups()
                 }
@@ -130,14 +147,14 @@ struct LogicBackupSettings: View {
                 }
                 .fixedSize()
                 .disabled(backups.isEmpty)
-                Button("Show backups") { NSWorkspace.shared.open(LogicBackup.folder) }
+                Button("Show Backups") { NSWorkspace.shared.open(LogicBackup.folder) }
             }
             .controlSize(.small)
             Text(message ?? (LogicBackup.sourceExists
                              ? (backups.first.map { "Latest copy: \(LogicBackup.label(for: $0))" } ?? "No copies yet.")
                              : "Logic's assignments file isn't on this Mac."))
                 .font(.system(size: 11, design: .rounded))
-                .foregroundStyle(Theme.upcoming)
+                .foregroundStyle(Theme.secondary)
         }
         .confirmationDialog("Restore Logic's assignments?", isPresented: Binding(
             get: { pendingRestore != nil }, set: { if !$0 { pendingRestore = nil } })) {

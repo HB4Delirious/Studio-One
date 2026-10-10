@@ -17,7 +17,17 @@ enum Diagnostics {
         return base
     }()
 
-    static var fileURL: URL { directory.appendingPathComponent("spot-a-oke.log") }
+    static var fileURL: URL { directory.appendingPathComponent("studio-one.log") }
+
+    /// The log had the app's old name. Carried over once, so the history
+    /// isn't lost with the rename.
+    private static let carriedOver: Void = {
+        let old = directory.appendingPathComponent("spot-a-oke.log")
+        let manager = FileManager.default
+        if manager.fileExists(atPath: old.path), !manager.fileExists(atPath: fileURL.path) {
+            try? manager.moveItem(at: old, to: fileURL)
+        }
+    }()
 
     private static let queue = DispatchQueue(label: "com.logan.SpotifyKaraoke.diagnostics")
 
@@ -30,6 +40,7 @@ enum Diagnostics {
     static func log(_ message: String) {
         let line = "\(stamp.string(from: Date()))  \(message)\n"
         queue.async {
+            _ = carriedOver
             rotateIfNeeded()
             guard let data = line.data(using: .utf8) else { return }
             if let handle = try? FileHandle(forWritingTo: fileURL) {
@@ -65,10 +76,8 @@ enum Diagnostics {
         let screens = NSScreen.screens.map { "\(Int($0.frame.width))x\(Int($0.frame.height))@\($0.maximumFramesPerSecond)Hz" }
         log("displays: \(screens.joined(separator: ", "))")
 
-        // Deliberately NOT reading the keychain here. A keychain read can raise
-        // an authorisation prompt, and this runs on the main thread at launch —
-        // it would hang the app before it draws. Whether credentials work is
-        // visible anyway from the lookup results logged per track.
+        // No keychain read here: it can raise a prompt, and this runs on the
+        // main thread at launch. Each lookup's result shows whether keys work.
         let defaults = UserDefaults.standard
         log("settings: midi=\(defaults.bool(forKey: MIDIBridge.enabledKey)) clock=\(defaults.bool(forKey: MIDIBridge.clockKey)) plugin=\(PitchPlugin.current.rawValue) fps=\(defaults.object(forKey: FrameRate.defaultsKey) as? Double ?? FrameRate.minimum) onTop=\(defaults.bool(forKey: AlwaysOnTop.defaultsKey))")
     }

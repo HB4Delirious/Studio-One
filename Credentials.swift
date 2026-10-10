@@ -29,12 +29,9 @@ enum Credentials {
         return String(data: data, encoding: .utf8)
     }
 
-    /// Updates in place, and adds only when there is nothing to update.
-    ///
-    /// This used to delete and then add. If the add failed — a locked
-    /// keychain, say — the old value was already gone, and the Spotify refresh
-    /// token is rewritten on every hourly renewal: one bad moment and you were
-    /// signed out. Updating also keeps the item's access settings.
+    /// Updates in place and adds only when there's nothing to update, so a
+    /// failed write never loses the old value (the refresh token is rewritten
+    /// hourly) and the item keeps its access settings.
     @discardableResult
     static func write(_ value: String, for key: Key) -> Bool {
         guard !value.isEmpty else {

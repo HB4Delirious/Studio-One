@@ -1,13 +1,8 @@
 import AppKit
 
-/// A playlist in the player's library.
-///
-/// `index` is its position, which is what the list is keyed by. On Apple
-/// Music it is also addressed by `persistentID` whenever that is known: a
-/// position shifts the moment a playlist is added or removed — including the
-/// requests playlist this app creates — and "user playlist 7" then opens a
-/// different one. (An earlier note here said playlists had no persistent ID;
-/// Music's dictionary gives every item one, playlists included.)
+/// A playlist in the player's library, keyed by its position. On Apple Music
+/// it's addressed by `persistentID` when known: positions shift whenever a
+/// playlist is added or removed, the requests playlist included.
 struct LibraryPlaylist: Identifiable, Hashable {
     let index: Int              // `user playlist N`, 1-based
     let name: String
@@ -40,6 +35,11 @@ struct LibraryTrack: Identifiable, Hashable {
 
     /// Apple Music: the playlist's persistent ID, preferred over its position.
     var playlistID: String? = nil
+
+    /// For looking the song up ahead of time (see `Preparation`): the album,
+    /// and on Apple Music the persistent ID its settings are saved under.
+    var album: String? = nil
+    var persistentID: String? = nil
 }
 
 struct UpNext {
@@ -47,62 +47,60 @@ struct UpNext {
     let tracks: [LibraryTrack]      // starting at the one now playing
 }
 
-/// Browsing on top of `MusicPlayer`, for the players that can support it.
-///
-/// Only Apple Music can. Spotify's scripting dictionary has no library, no
-/// playlists and no queue — its whole surface is the current track, the
-/// transport and the volume. Nothing in it is gated behind permission; the
-/// properties simply do not exist, so there is nothing to fall back to.
+/// The library, for the players that have one to browse: Apple Music through
+/// its scripting, Spotify through the Web API once signed in.
 protocol MusicBrowser: AnyObject, Sendable {
     var canBrowseLibrary: Bool { get }
 
-    /// Whether guests can queue songs through the request line. Separate from
-    /// browsing since Spotify gained a library: the request line adds songs to a
-    /// playlist and reorders it, which Spotify's side of this app cannot do.
-    var canTakeRequests: Bool { get }
     func playlists() async throws -> [LibraryPlaylist]
     func tracks(in playlist: LibraryPlaylist) async throws -> [LibraryTrack]
     func upNext(limit: Int) async throws -> UpNext?
-    func play(_ track: LibraryTrack) async throws
-    func artwork(for track: LibraryTrack) async -> Data?
 
-    /// Cover of whatever is playing. Apple Music has no artwork URL, so this is
-    /// the only way to get one on that source — and it feeds the palette that
-    /// tints the whole app, not just the panel.
+    /// A track from a playlist — with what follows it queued behind — or a
+    /// search hit on its own.
+    func play(_ track: LibraryTrack) async throws
+
+    func cover(of playlist: LibraryPlaylist) async -> Data?
+
+    /// The playing song's cover, for players that give image data rather
+    /// than a URL (Apple Music). It also tints the whole app.
     func currentArtwork() async -> Data?
 
-    /// Search the host's library. This is what guests can request from: Music's
-    /// `search` command searches a playlist, so the catalogue is out of reach —
-    /// only what the host already has.
+    /// Apple Music: the host's own library, since its scripting can't reach
+    /// the catalogue. Spotify: all of Spotify.
     func searchLibrary(_ query: String) async throws -> [LibraryTrack]
 
-    /// Append a track to the requests playlist, creating it if needed.
-    /// Returns what was added, for the confirmation the guest sees.
+    /// The song after the one playing, with what it needs to be played again
+    /// later within its playlist — for coming back from house music.
+    func resumePoint() async -> LibraryTrack?
+
+    /// The player's output volume, 0–100.
+    func volume() async -> Int
+    /// Nil when it couldn't be read, rather than a guess.
+    func readVolume() async -> Int?
+    func setVolume(_ value: Int) async
+}
+
+/// What the request line needs besides browsing: a playlist guests add to,
+/// that the host can start and reorder from the remote. Only Apple Music has
+/// one it can write to.
+protocol RequestQueue: MusicBrowser {
+    /// Appends to the requests playlist, creating it if needed, and returns
+    /// what was added for the guest's confirmation.
     func queueRequest(databaseID: Int) async throws -> LibraryTrack
 
-    /// What's waiting in the requests playlist.
-    func requests() async throws -> [LibraryTrack]
-
-    /// Start the requests playlist. Playing it *as a playlist* is what gives
-    /// Music a `current playlist`, and so what makes Up Next show the queue.
+    /// Plays the requests playlist as a playlist — which is what gives Music
+    /// an Up Next that follows it.
     func playRequests() async throws
 
-    /// Play one track straight away, from the remote.
     func playNow(databaseID: Int) async throws
 
-    /// Whether the queue on screen is the requests playlist, and so ours to
-    /// rearrange. Anything else is one of the user's own playlists, and
-    /// reordering it from a phone would quietly rewrite their library.
+    /// Whether the queue showing is the requests playlist. Anything else is
+    /// one of the host's own playlists, not to be rearranged from a phone.
     func queueIsEditable() async -> Bool
 
-    /// Move a track within the requests playlist, 1-based, and re-seat Music's
-    /// Up Next so the change actually takes effect.
+    /// Moves a track, by offsets into the queue as the remote shows it.
     func reorderQueue(from: Int, to: Int) async throws
-
-    /// The player's own output volume, 0–100. The one audio control Apple Music
-    /// actually exposes — there are no stems to balance.
-    func volume() async -> Int
-    func setVolume(_ value: Int) async
 }
 
 enum LibraryError: LocalizedError {
@@ -116,21 +114,16 @@ enum LibraryError: LocalizedError {
 
 // MARK: - Apple Music
 
-/// Every script here reads properties in bulk — `name of every track of p`
-/// rather than a `repeat` that asks per track. Measured on a 51-track playlist:
-/// 2.71s the loop way, 0.18s this way, and it stays flat as playlists grow (a
-/// 96-track playlist came back in 0.16s). Each property crossing the Apple
-/// Event boundary once instead of once per track is the whole difference.
+/// Scripts read properties in bulk (`name of every track of p`), never per
+/// track in a loop: each crossing of the Apple Event boundary costs, and on a
+/// 51-track playlist that's 0.18 s against 2.71 s.
 extension AppleMusicController: MusicBrowser {
 
     var canBrowseLibrary: Bool { true }
-    var canTakeRequests: Bool { true }
 
     func playlists() async throws -> [LibraryPlaylist] {
-        // Deliberately no track counts. `count of tracks` per playlist took the
-        // enumeration from 0.48s to 2.40s, and the count is not worth five times
-        // the wait before anything appears.
-        let raw = try await runScript("""
+        // No track counts: they make listing the playlists five times slower.
+        let raw = try await scripts.text("""
         set d to character id 31
         tell application id "com.apple.Music"
             set ns to name of every user playlist
@@ -167,7 +160,7 @@ extension AppleMusicController: MusicBrowser {
         guard let reference = Self.playlistReference(index: playlist.index, id: playlist.persistentID) else {
             return []
         }
-        let raw = try await runScript("""
+        let raw = try await scripts.text("""
         set d to character id 31
         tell application id "com.apple.Music"
             set p to \(reference)
@@ -175,9 +168,11 @@ extension AppleMusicController: MusicBrowser {
             set ar to artist of every track of p
             set du to duration of every track of p
             set di to database ID of every track of p
+            set al to album of every track of p
+            set pids to persistent ID of every track of p
             set out to ""
             repeat with i from 1 to count of ns
-                set out to out & (item i of ns) & d & (item i of ar) & d & ((item i of du) as text) & d & (item i of di) & linefeed
+                set out to out & (item i of ns) & d & (item i of ar) & d & ((item i of du) as text) & d & (item i of di) & d & (item i of al) & d & (item i of pids) & linefeed
             end repeat
             return out
         end tell
@@ -190,14 +185,10 @@ extension AppleMusicController: MusicBrowser {
     }
 
     func upNext(limit: Int) async throws -> UpNext? {
-        // `current playlist` only exists while something is playing — asking
-        // when stopped raises "Can't get current playlist", which is a normal
-        // state here rather than a failure.
-        //
-        // The window is sliced inside the script: a library playlist can hold
-        // thousands of tracks, and there is no reason to carry them all across
-        // the boundary to show the next few.
-        let raw = try await runScript("""
+        // `current playlist` exists only while something plays; asking when
+        // stopped is an error that just means "nothing queued". The slice is
+        // taken inside the script, since a playlist can hold thousands.
+        let raw = try await scripts.text("""
         set d to character id 31
         tell application id "com.apple.Music"
             try
@@ -236,30 +227,25 @@ extension AppleMusicController: MusicBrowser {
                       tracks: Self.parseTracks(lines.joined(separator: "\n"), playlistIndex: nil))
     }
 
-    /// How far in we will skip to reach a chosen track. Each skip is cheap
-    /// inside the script — 29 of them took 0.89s — but the cost is linear, and
-    /// waiting fifteen seconds to start track 500 is worse than starting it
-    /// without a queue.
+    /// How far into a playlist `play(_:)` will skip to reach a track (29
+    /// skips take about 0.9 s). Deeper, it starts on its own, with no queue.
     private static let skipLimit = 40
 
     func play(_ track: LibraryTrack) async throws {
         guard let index = track.trackIndex,
-              let reference = Self.playlistReference(index: track.playlistIndex, id: track.playlistID) else { return }
+              let reference = Self.playlistReference(index: track.playlistIndex, id: track.playlistID) else {
+            // A search hit: no playlist to play it within.
+            if let id = track.databaseID { try await playNow(databaseID: id) }
+            return
+        }
 
-        // Music will do one or the other, not both: `play user playlist` builds
-        // an Up Next queue but always starts at track 1, while `play track N of
-        // user playlist` starts where you asked and leaves the queue empty — so
-        // `next track` afterwards does nothing at all. Verified both ways.
-        //
-        // So for a track near the top, play the playlist and skip to it: the
-        // repeat runs inside Music, not as one Apple Event per skip.
-        //
-        // The track is found by its database ID at the moment of playing: the
-        // position it had when the list was read is only a fallback, since a
-        // playlist edited meanwhile would otherwise start a different song.
-        // Deeper than the skip limit, it starts on its own and nothing follows.
+        // `play user playlist` queues the playlist but always starts at track
+        // 1; `play track N of …` starts at N with nothing queued after it. So
+        // near the top, the playlist is played and skipped through inside
+        // Music. The track is found by database ID when played — its position
+        // is only a fallback, in case the playlist changed since it was read.
         let wanted = track.databaseID.map(String.init) ?? "0"
-        _ = try await runScript("""
+        try await scripts.run("""
         tell application id "com.apple.Music"
             set p to \(reference)
             set idx to \(index)
@@ -284,21 +270,104 @@ extension AppleMusicController: MusicBrowser {
         """)
     }
 
-    func artwork(for track: LibraryTrack) async -> Data? {
-        guard let index = track.trackIndex,
-              let reference = Self.playlistReference(index: track.playlistIndex, id: track.playlistID) else { return nil }
-        // `data of artwork`, not `raw data`: raw data fails on Apple Music
-        // streaming tracks — they come back as "shared track" and refuse it,
-        // while `data` returns the picture fine.
-        return try? await runScriptData("""
+    /// The first track's cover; failing that, a 2×2 of the first four covers
+    /// among the first dozen tracks, or the one found. `data of artwork`, not
+    /// `raw data`, which streaming tracks ("shared tracks") refuse. One short
+    /// Apple Event per track rather than one long script: they share the
+    /// player's queue with the poll and the transport, which get in between.
+    func cover(of playlist: LibraryPlaylist) async -> Data? {
+        guard let reference = Self.playlistReference(index: playlist.index, id: playlist.persistentID) else { return nil }
+        if let first = await artwork(track: 1, of: reference) { return first }
+        let raw = try? await scripts.text("""
+        tell application id "com.apple.Music"
+            return (count of tracks of \(reference)) as text
+        end tell
+        """)
+        let count = min(12, Int(raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0)
+        var covers: [Data] = []
+        if count >= 2 {
+            for index in 2...count where covers.count < 4 {
+                if let data = await artwork(track: index, of: reference) { covers.append(data) }
+            }
+        }
+        if covers.count >= 4, let mosaic = NSImage.mosaic(covers.prefix(4).compactMap(NSImage.init(data:)), side: 600) {
+            return mosaic
+        }
+        return covers.first
+    }
+
+    private func artwork(track index: Int, of reference: String) async -> Data? {
+        try? await scripts.data("""
         tell application id "com.apple.Music"
             return data of artwork 1 of track \(index) of \(reference)
         end tell
         """)
     }
 
+    func resumePoint() async -> LibraryTrack? {
+        // The current playlist's persistent ID and the next track's place and
+        // identity. Nothing when nothing is next, or the library itself plays.
+        let raw = try? await scripts.text("""
+        set d to character id 31
+        tell application id "com.apple.Music"
+            try
+                set p to current playlist
+                set cid to database ID of current track
+                set ids to database ID of every track of p
+                set idx to 0
+                repeat with i from 1 to count of ids
+                    if item i of ids is cid then
+                        set idx to i
+                        exit repeat
+                    end if
+                end repeat
+                if idx is 0 or idx ≥ (count of ids) then return ""
+                set t to track (idx + 1) of p
+                return (persistent ID of p) & d & ((idx + 1) as text) & d & ((database ID of t) as text) & d & (name of t) & d & (artist of t) & d & ((duration of t) as text)
+            on error
+                return ""
+            end try
+        end tell
+        """)
+        let fields = (raw ?? "").components(separatedBy: "\u{1F}")
+        guard fields.count == 6, let index = Int(fields[1]), let id = Int(fields[2]) else { return nil }
+        return LibraryTrack(id: "resume-\(id)", name: fields[3], artist: fields[4],
+                            duration: Double(scripted: fields[5]) ?? 0,
+                            playlistIndex: nil, trackIndex: index, uri: nil,
+                            databaseID: id, playlistID: fields[0])
+    }
+
+    /// The requests playlist's persistent ID, for playing a new request within it.
+    func requestsPlaylistID() async -> String? {
+        let raw = try? await scripts.text("""
+        tell application id "com.apple.Music"
+            try
+                return persistent ID of (first user playlist whose name is "\(Self.requestsPlaylist)")
+            on error
+                return ""
+            end try
+        end tell
+        """)
+        let id = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return id.isEmpty ? nil : id
+    }
+
+    /// Songs in the requests playlist; nil when there isn't one yet.
+    func requestCount() async -> Int? {
+        let raw = try? await scripts.text("""
+        tell application id "com.apple.Music"
+            try
+                return (count of tracks of (first user playlist whose name is "\(Self.requestsPlaylist)")) as text
+            on error
+                return ""
+            end try
+        end tell
+        """)
+        return raw.flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+
     func currentArtwork() async -> Data? {
-        try? await runScriptData("""
+        try? await scripts.data("""
         tell application id "com.apple.Music"
             return data of artwork 1 of current track
         end tell
@@ -308,18 +377,15 @@ extension AppleMusicController: MusicBrowser {
     static let requestsPlaylist = "Studio One Requests"
 
     func searchLibrary(_ query: String) async throws -> [LibraryTrack] {
-        // Quotes would end the AppleScript string literal early, so they are
-        // stripped rather than escaped: this text came off the network.
+        // From the network, so anything that could end the string literal is
+        // stripped rather than escaped.
         let safe = query.replacingOccurrences(of: "\"", with: " ")
                         .replacingOccurrences(of: "\\", with: " ")
                         .prefix(80)
-        // Each row is read inside its own `try`. Music's search index can hand
-        // back a specifier for a track that no longer exists — a deleted URL
-        // track leaves one behind until Music restarts — and reading any
-        // property of one fails -1700. Without the per-row try that error takes
-        // the whole script down, `searchLibrary` throws, and the caller's
-        // `try?` turns a full library into no results at all, silently.
-        let raw = try await runScript("""
+        // A `try` per row: Music's search index can return a track that no
+        // longer exists (until Music restarts), and reading it fails -1700 —
+        // which would otherwise take every result down with it.
+        let raw = try await scripts.text("""
         set d to character id 31
         tell application id "com.apple.Music"
             set res to search library playlist 1 for "\(safe)"
@@ -340,8 +406,62 @@ extension AppleMusicController: MusicBrowser {
         return Self.parseSearch(raw)
     }
 
+    func volume() async -> Int { await readVolume() ?? 100 }
+
+    func readVolume() async -> Int? {
+        let raw = try? await scripts.text("""
+        tell application id "com.apple.Music"
+            return (sound volume as text)
+        end tell
+        """)
+        return Int(raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    }
+
+    func setVolume(_ value: Int) async {
+        let clamped = min(100, max(0, value))
+        _ = try? await scripts.text("""
+        tell application id "com.apple.Music"
+            set sound volume to \(clamped)
+            return ""
+        end tell
+        """)
+    }
+
+    private static func parseSearch(_ raw: String) -> [LibraryTrack] {
+        raw.components(separatedBy: .newlines).compactMap { line in
+            let f = line.components(separatedBy: "\u{1F}")
+            guard f.count >= 4, !f[0].isEmpty else { return nil }
+            return LibraryTrack(id: f[3], name: f[0], artist: f[1],
+                                duration: Double(scripted: f[2]) ?? 0,
+                                playlistIndex: nil, trackIndex: nil, uri: nil,
+                                databaseID: Int(f[3]))
+        }
+    }
+
+    private static func parseTracks(_ raw: String, playlistIndex: Int?) -> [LibraryTrack] {
+        raw.components(separatedBy: .newlines)
+            .enumerated()
+            .compactMap { offset, line in
+                let fields = line.components(separatedBy: "\u{1F}")
+                guard fields.count >= 3, !fields[0].isEmpty else { return nil }
+                return LibraryTrack(id: "\(playlistIndex ?? 0):\(offset + 1):\(fields[0])",
+                                    name: fields[0],
+                                    artist: fields[1],
+                                    duration: Double(scripted: fields[2]) ?? 0,
+                                    playlistIndex: playlistIndex,
+                                    trackIndex: playlistIndex == nil ? nil : offset + 1,
+                                    uri: nil,
+                                    databaseID: fields.count > 3 ? Int(fields[3]) : nil,
+                                    album: fields.count > 4 ? fields[4] : nil,
+                                    persistentID: fields.count > 5 ? fields[5] : nil)
+            }
+    }
+}
+
+extension AppleMusicController: RequestQueue {
+
     func queueRequest(databaseID: Int) async throws -> LibraryTrack {
-        let raw = try await runScript("""
+        let raw = try await scripts.text("""
         set d to character id 31
         tell application id "com.apple.Music"
             set pname to "\(Self.requestsPlaylist)"
@@ -356,38 +476,15 @@ extension AppleMusicController: MusicBrowser {
         end tell
         """)
         guard let track = Self.parseSearch(raw).first else {
-            throw SpotifyControllerError.malformedResponse
+            throw PlayerError.malformedResponse
         }
         return track
     }
 
-    func requests() async throws -> [LibraryTrack] {
-        let raw = try await runScript("""
-        set d to character id 31
-        tell application id "com.apple.Music"
-            try
-                set p to (first user playlist whose name is "\(Self.requestsPlaylist)")
-            on error
-                return ""
-            end try
-            set ns to name of every track of p
-            set ar to artist of every track of p
-            set du to duration of every track of p
-            set out to ""
-            repeat with i from 1 to count of ns
-                set out to out & (item i of ns) & d & (item i of ar) & d & ((item i of du) as text) & d & "0" & linefeed
-            end repeat
-            return out
-        end tell
-        """)
-        return Self.parseSearch(raw)
-    }
-
-    /// `play p`, not `play track 1 of p`: the second starts the song with an
-    /// empty Up Next (see `play(_:)`), so the queue stopped after the first
-    /// request. Playing the playlist itself is what carries on through it.
+    /// `play p`, not `play track 1 of p`, which leaves nothing queued after
+    /// the first request (see `play(_:)`).
     func playRequests() async throws {
-        let raw = try await runScript("""
+        let raw = try await scripts.text("""
         tell application id "com.apple.Music"
             try
                 set p to (first user playlist whose name is "\(Self.requestsPlaylist)")
@@ -403,7 +500,7 @@ extension AppleMusicController: MusicBrowser {
     }
 
     func playNow(databaseID: Int) async throws {
-        _ = try await runScript("""
+        try await scripts.run("""
         tell application id "com.apple.Music"
             play (first track of library playlist 1 whose database ID is \(databaseID))
             return ""
@@ -412,7 +509,7 @@ extension AppleMusicController: MusicBrowser {
     }
 
     func queueIsEditable() async -> Bool {
-        let raw = try? await runScript("""
+        let raw = try? await scripts.text("""
         tell application id "com.apple.Music"
             try
                 return name of current playlist
@@ -425,20 +522,13 @@ extension AppleMusicController: MusicBrowser {
     }
 
     func reorderQueue(from: Int, to: Int) async throws {
-        // `from` and `to` are offsets into the queue the remote shows, which
-        // starts at the track now playing — so they are resolved against the
-        // playing track's position here, not guessed by the caller.
-        //
-        // Music has no way to move a track inside a playlist: `move` takes a
-        // playlist, not a track. The only way to reorder is to rebuild, and
-        // only the tail from the first affected position needs it.
-        //
-        // Rebuilding is not enough on its own either. Up Next is snapshotted
-        // when playback starts and ignores playlist edits — verified by
-        // reordering mid-play and watching `next track` still follow the old
-        // order. So the queue is re-seated afterwards, landing back on the
-        // current track at the position it had reached.
-        _ = try await runScript("""
+        // `from` and `to` count from the playing track, as the remote shows
+        // the queue, so they're resolved against its position here. Music
+        // can't move a track within a playlist, so the tail from the first
+        // affected position is rebuilt; and since Up Next ignores edits made
+        // during playback, the playlist is then replayed from the same track
+        // and position.
+        try await scripts.run("""
         tell application id "com.apple.Music"
             set p to (first user playlist whose name is "\(Self.requestsPlaylist)")
             set n to count of tracks of p
@@ -466,9 +556,8 @@ extension AppleMusicController: MusicBrowser {
             set low to pFrom
             if pTo < low then set low to pTo
 
-            -- Plain integers, not track references: Music raises "Unknown
-            -- object type" if you hold specifiers in a list and use them later.
-            -- Indices stay valid throughout because duplicating only appends.
+            -- Indices, not track references, which Music can't use later
+            -- ("Unknown object type"). Duplicating only appends, so they hold.
             set others to {}
             repeat with i from low to n
                 if i is not pFrom then set end of others to i
@@ -507,64 +596,15 @@ extension AppleMusicController: MusicBrowser {
         end tell
         """)
     }
-
-    func volume() async -> Int {
-        let raw = try? await runScript("""
-        tell application id "com.apple.Music"
-            return (sound volume as text)
-        end tell
-        """)
-        return Int(raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 100
-    }
-
-    func setVolume(_ value: Int) async {
-        let clamped = min(100, max(0, value))
-        _ = try? await runScript("""
-        tell application id "com.apple.Music"
-            set sound volume to \(clamped)
-            return ""
-        end tell
-        """)
-    }
-
-    private static func parseSearch(_ raw: String) -> [LibraryTrack] {
-        raw.components(separatedBy: .newlines).compactMap { line in
-            let f = line.components(separatedBy: "\u{1F}")
-            guard f.count >= 4, !f[0].isEmpty else { return nil }
-            return LibraryTrack(id: f[3], name: f[0], artist: f[1],
-                                duration: Double(scripted: f[2]) ?? 0,
-                                playlistIndex: nil, trackIndex: nil, uri: nil,
-                                databaseID: Int(f[3]))
-        }
-    }
-
-    private static func parseTracks(_ raw: String, playlistIndex: Int?) -> [LibraryTrack] {
-        raw.components(separatedBy: .newlines)
-            .enumerated()
-            .compactMap { offset, line in
-                let fields = line.components(separatedBy: "\u{1F}")
-                guard fields.count >= 3, !fields[0].isEmpty else { return nil }
-                return LibraryTrack(id: "\(playlistIndex ?? 0):\(offset + 1):\(fields[0])",
-                                    name: fields[0],
-                                    artist: fields[1],
-                                    duration: Double(scripted: fields[2]) ?? 0,
-                                    playlistIndex: playlistIndex,
-                                    trackIndex: playlistIndex == nil ? nil : offset + 1,
-                                    uri: nil,
-                                    databaseID: fields.count > 3 ? Int(fields[3]) : nil)
-            }
-    }
 }
 
 // MARK: - Spotify
 
-/// Spotify's scripting dictionary has no library, so the library comes from the
-/// Web API once you have signed in (see `SpotifyAccount`), and playback still
-/// goes through the desktop app by URI — which needs no Premium, unlike the Web
-/// API's own playback endpoints.
+/// Spotify's library comes from the Web API once signed in (`SpotifyAccount`);
+/// playback goes through the desktop app by URI, which unlike the Web API's
+/// playback endpoints needs no Premium.
 extension SpotifyController: MusicBrowser {
     var canBrowseLibrary: Bool { SpotifyAccount.isSignedIn }
-    var canTakeRequests: Bool { false }
 
     func playlists() async throws -> [LibraryPlaylist] {
         try await SpotifyAccount.shared.playlists().map { LibraryPlaylist(index: $0.index, name: $0.name) }
@@ -576,7 +616,7 @@ extension SpotifyController: MusicBrowser {
             LibraryTrack(id: "\(playlist.index)-\(offset)-\(track.uri)", name: track.name,
                          artist: track.artist, duration: track.duration,
                          playlistIndex: playlist.index, trackIndex: offset + 1,
-                         uri: track.uri, contextURI: context)
+                         uri: track.uri, contextURI: context, album: track.album)
         }
     }
 
@@ -591,34 +631,35 @@ extension SpotifyController: MusicBrowser {
                       })
     }
 
-    /// Playlist covers come as URLs from the Web API. The probe `LibraryModel`
-    /// sends for a cover is the playlist's first track.
-    func artwork(for track: LibraryTrack) async -> Data? {
-        guard let index = track.playlistIndex,
-              let url = await SpotifyAccount.shared.coverURL(forPlaylist: index) else { return nil }
+    func cover(of playlist: LibraryPlaylist) async -> Data? {
+        guard let url = await SpotifyAccount.shared.coverURL(forPlaylist: playlist.index) else { return nil }
         return try? await URLSession.shared.data(from: url).0
     }
 
     func currentArtwork() async -> Data? { nil }   // Spotify gives a URL instead
 
-    /// Searches all of Spotify, not just your library — and unlike Apple Music's
-    /// catalogue, anything found here plays straight away by URI. Uses the
-    /// client-credentials token, so it works whether or not you have signed in.
+    /// All of Spotify, signed in or not (it uses the client-credentials
+    /// token), and anything found plays straight away.
     func searchLibrary(_ query: String) async throws -> [LibraryTrack] {
         try await SpotifyAPI.shared.search(query).map { hit in
             LibraryTrack(id: "search-\(hit.uri)", name: hit.name, artist: hit.artist,
                          duration: hit.duration, playlistIndex: nil, trackIndex: nil, uri: hit.uri)
         }
     }
-    func requests() async throws -> [LibraryTrack] { [] }
-    func queueRequest(databaseID: Int) async throws -> LibraryTrack {
-        throw SpotifyControllerError.notRunning
-    }
-    func playRequests() async throws {}
-    func playNow(databaseID: Int) async throws {}
-    func queueIsEditable() async -> Bool { false }
-    func reorderQueue(from: Int, to: Int) async throws {}
     func volume() async -> Int { await soundVolume() ?? 100 }
+    func readVolume() async -> Int? { await soundVolume() }
+
+    /// From the Web API, so signed in only: the next in the queue, played
+    /// within the playlist playing.
+    func resumePoint() async -> LibraryTrack? {
+        guard SpotifyAccount.isSignedIn,
+              let queue = try? await SpotifyAccount.shared.queue(limit: 1), queue.count > 1 else { return nil }
+        let next = queue[1]
+        let context = try? await SpotifyAccount.shared.playingContext()
+        return LibraryTrack(id: "resume-\(next.uri)", name: next.name, artist: next.artist,
+                            duration: next.duration, playlistIndex: nil, trackIndex: nil,
+                            uri: next.uri, contextURI: context ?? nil)
+    }
     func setVolume(_ value: Int) async { await setSoundVolume(value) }
 
     func play(_ track: LibraryTrack) async throws {

@@ -14,16 +14,9 @@ struct CatalogTrack: Identifiable, Hashable {
 /// Searches the whole Apple Music catalogue through the public iTunes Search
 /// API — no key, no account.
 ///
-/// This exists because Music's own scripting `search` only looks inside a
-/// playlist, so the app could never see past what the host already owned.
-///
-/// What it deliberately does not do is play the result. Music cannot be told to
-/// play a catalogue track: `open location` on a music.apple.com URL navigates
-/// to it and leaves a paused placeholder named after the album id, and a
-/// following `play` does nothing — checked against the https, music:// and
-/// itmss:// forms, all identical. The only scriptable sources are "Library" and
-/// "iTunes Store". So a catalogue hit is offered as somewhere to go and add,
-/// and it becomes playable once it is in the library.
+/// Music's scripting `search` only looks inside a playlist. Hits can't be
+/// played from a script either (see `LibraryModel.open(_:)`), so they're
+/// offered to open and add; once in the library, they play.
 actor CatalogSearch {
 
     static let shared = CatalogSearch()

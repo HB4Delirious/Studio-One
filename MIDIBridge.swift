@@ -1,139 +1,161 @@
 import CoreMIDI
 import Foundation
 
-/// Publishes the current track's key and tempo as MIDI on a virtual source
-/// named "Spot-a-oke".
+/// Publishes the playing song's key and tempo, and the Stream Deck's mixer
+/// controls, as MIDI from a virtual source named "Studio One".
 ///
-/// The port keeps the app's old name on purpose. Logic files controller
-/// assignments under the port they were learned on, so renaming this endpoint
-/// would orphan every assignment already made against it. The name is an
-/// identifier here, not a label.
-///
-/// Plugins have no external API, and the AU/VST host protocol has no concept of
-/// musical key — but any automatable plugin parameter can be MIDI-learned in
-/// Logic's Controller Assignments. A control change per track change is therefore
-/// the one channel that reaches something like Topline Vocal Suite's key setting.
+/// Plug-ins have no API a DAW exposes, and the AU/VST protocol has no notion
+/// of key — but any automatable parameter can be learned in Logic's Controller
+/// Assignments (⌥⇧K). A controller message per song is how the key reaches a
+/// tuner. Logic files assignments under the port's name and unique ID, so both
+/// are fixed: renaming the port orphans everything already learned.
 @MainActor
 final class MIDIBridge: ObservableObject {
 
-    /// What went out last, in words — shown in Settings and written to the log,
-    /// so "nothing happens in Logic" can be split into "nothing was sent" and
-    /// "it was sent and went nowhere". Before this, a track with no key was
-    /// skipped silently and the two looked identical.
-    @Published private(set) var lastSent = "Nothing sent yet this session."
-
     static let shared = MIDIBridge()
 
-    /// Learn these in Logic: Controller Assignments → Learn Mode, touch the
-    /// plugin parameter, then let the app send on the next track change. What
-    /// carries the key depends on the plug-in — see `PitchPlugin`.
-    static var tempoCC: UInt8 { mackieSafe ? 87 : 22 }    // see logicTempo* below
+    /// What went out last, in words — shown in Settings and logged, so "nothing
+    /// happened in Logic" can be told apart from "nothing was sent".
+    @Published private(set) var lastSent = "Nothing sent yet this session."
 
-    /// Moves key, scale and tempo off CC 20–22 on channel 1.
-    ///
-    /// A Mackie Control reads CC 16–23 on channel 1 as its eight V-Pots,
-    /// turned relative — the same shape as a key change. With a Mackie Control
-    /// surface set up in Logic (another Stream Deck plug-in installs one) and
-    /// listening broadly, a song change here could turn V-Pots on the mixer.
-    /// CC 85, 86, 87 and 119 mean nothing to it. Off unless chosen, because
-    /// switching means learning those assignments again.
-    nonisolated static let mackieSafeKey = "midiMackieSafe"
-    nonisolated static var mackieSafe: Bool { UserDefaults.standard.bool(forKey: mackieSafeKey) }
+    /// What MetaTune on Mic 1 should show after the last key or walk step,
+    /// and by when — for the key check (`KeyCheck`) to hold Logic to.
+    struct SentKey: Equatable {
+        let name: String
+        let on: Set<Int>
+        let due: Date
+    }
+    @Published private(set) var sentKey: SentKey?
 
-    /// Logic's Tempo parameter spans 5–990 BPM, and a controller assignment maps
-    /// the whole CC range onto it. The Value Minimum/Maximum fields that would
-    /// narrow that are greyed out for Global > Tempo, so the encoding has to
-    /// match Logic's range rather than a nominal musical one — otherwise 130 BPM
-    /// arrives as 501.
-    static let logicTempoMin = 5.0
-    static let logicTempoMax = 990.0
-
-    /// Fine half of the 14-bit tempo pair. MIDI convention puts the LSB 32
-    /// controllers above the MSB, so CC 22 pairs with CC 54.
-    static var tempoFineCC: UInt8 { mackieSafe ? 119 : 54 }
-
-    /// Tempo as a 14-bit value: 16,384 steps across Logic's 5–990 BPM range is
-    /// about 0.06 BPM, against 7.76 BPM for a plain 7-bit CC.
-    static func tempo14Bit(for bpm: Double) -> (msb: UInt8, lsb: UInt8) {
-        let span = logicTempoMax - logicTempoMin
-        let scaled = ((bpm - logicTempoMin) / span * 16383).rounded()
-        let value = Int(min(16383, max(0, scaled)))
-        return (UInt8(value >> 7), UInt8(value & 0x7F))
+    /// What the tuners were last told. Kept across launches, so quitting while
+    /// they're bypassed still brings them back with the next key.
+    @Published private(set) var tunersBypassed = UserDefaults.standard.bool(forKey: MIDIBridge.bypassStateKey) {
+        didSet { UserDefaults.standard.set(tunersBypassed, forKey: Self.bypassStateKey) }
     }
 
-    /// Fixed identity for the virtual endpoint ("SPOK" as ASCII).
-    ///
-    /// CoreMIDI assigns a random unique ID to a virtual source unless told
-    /// otherwise, and hosts key their controller assignments off that ID — so
-    /// every rebuild looks like a different MIDI interface and Logic drops the
-    /// mappings. Pinning it keeps the device identical across rebuilds.
+    // MARK: - Settings
+
+    static let portName = "Studio One"
+    /// Any fixed value will do; CoreMIDI would otherwise pick a new one per
+    /// launch, and Logic would see a new device each time.
     private static let endpointID: Int32 = 0x53504F4B
 
     static let enabledKey = "midiBridgeEnabled"
+    static let clockKey = "midiClockEnabled"
     static let catchUpKey = "midiKeyCatchUp"
+    nonisolated static let mackieSafeKey = "midiMackieSafe"
+    nonisolated static let bypassKey = "midiBypassWithoutKey"
+    nonisolated static let bypassInvertedKey = "midiBypassInverted"
+    private static let bypassStateKey = "midiTunersBypassed"
 
-    /// On unless turned off. See `sendKey`.
-    static var catchesUp: Bool {
-        UserDefaults.standard.object(forKey: catchUpKey) as? Bool ?? true
+    /// Sweep through the range before each key (see `sweep`). On by default.
+    static var catchesUp: Bool { UserDefaults.standard.object(forKey: catchUpKey) as? Bool ?? true }
+
+    /// Moves key and scale off CC 20–21 on channel 1, which a Mackie Control
+    /// reads as V-Pots — so with one set up in Logic, a song change would turn
+    /// mixer knobs. Off by default: switching means learning again.
+    nonisolated static var mackieSafe: Bool { UserDefaults.standard.bool(forKey: mackieSafeKey) }
+
+    /// Bypass the tuners while a song has no key. On by default.
+    nonisolated static var bypassesWithoutKey: Bool {
+        UserDefaults.standard.object(forKey: bypassKey) as? Bool ?? true
     }
 
-    /// Bumped on every key send, so a sweep still in flight from the previous
-    /// song can't land after the new one and leave the wrong key behind.
-    private var keyGeneration = 0
-    static let clockKey = "midiClockEnabled"
-
-    private var client = MIDIClientRef()
-    private var source = MIDIEndpointRef()
-    private var ready = false
-    private var clockTimer: DispatchSourceTimer?
-    private var identityTimer: Timer?
+    /// For an assignment aimed at an on/off control rather than a bypass.
+    nonisolated static var bypassInverted: Bool { UserDefaults.standard.bool(forKey: bypassInvertedKey) }
 
     private var isEnabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
     private var clockEnabled: Bool { UserDefaults.standard.bool(forKey: Self.clockKey) }
 
+    // MARK: - Controller numbers
+    //
+    // The tuner's key and scale are the plug-in's (`PitchPlugin`); the mixer's
+    // and the song settings' are on channel 16 (`MixerControl`, `SongControl`).
+
+    /// The tempo is pitch bend on the control channel, 16, beside the mixer
+    /// and song controls: one message with all fourteen bits, which Logic
+    /// learns whole — a pair of controllers it learns only half of.
+    nonisolated static let tempoChannel: UInt8 = 15
+    /// On each mic's channel; clear of everything else, Mackie-safe or not.
+    static let bypassCC: UInt8 = 114
+
+    // MARK: - State
+
+    private var client = MIDIClientRef()
+    private var source = MIDIEndpointRef()
+    private var ready = false
+    private var identityTimer: Timer?
+    private var clockTimer: DispatchSourceTimer?
+
+    // Bumped by each new send of their kind, so a sweep still in flight from
+    // the last one stops instead of landing after it.
+    private var keyGeneration = 0
+    private var bypassGeneration = 0
+    private var walkGeneration = 0
+    private var songGeneration = 0
+
+    // MARK: - Port
+
     func start() {
         guard !ready else { return }
-        let clientStatus = MIDIClientCreate("Spot-a-oke" as CFString, nil, nil, &client)
+        let clientStatus = MIDIClientCreate(Self.portName as CFString, nil, nil, &client)
         let sourceStatus = clientStatus == noErr
-            ? MIDISourceCreate(client, "Spot-a-oke" as CFString, &source) : clientStatus
+            ? MIDISourceCreate(client, Self.portName as CFString, &source) : clientStatus
         guard sourceStatus == noErr else {
-            // Seen when the previous instance is still letting go of the port.
-            // Silence here looked like "MIDI does nothing" with no way to tell
-            // why, so it says so and tries again rather than giving up.
+            // Seen while a previous instance is still letting go of the port.
             Diagnostics.log("midi: port not created (\(sourceStatus)) — trying again")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.start() }
             return
         }
-
-        // Claim the stable identity, and keep trying if something else holds
-        // it. That something is the Stream Deck plug-in, which takes this same
-        // identity while this app is shut so its own messages reach the
-        // assignments Logic already knows, and lets go when this app appears.
-        // Without the retry the app would launch into a random identity — one
-        // Logic has never been taught — and every assignment would go deaf.
         claimIdentity()
-        MIDIObjectSetStringProperty(source, kMIDIPropertyManufacturer, "Spot-a-oke" as CFString)
-        MIDIObjectSetStringProperty(source, kMIDIPropertyModel, "Spot-a-oke" as CFString)
-
+        MIDIObjectSetStringProperty(source, kMIDIPropertyManufacturer, Self.portName as CFString)
+        MIDIObjectSetStringProperty(source, kMIDIPropertyModel, Self.portName as CFString)
         ready = true
         Self.liveSource = source
     }
 
+    /// Takes the fixed unique ID, and keeps trying for as long as something
+    /// else holds it — the Stream Deck plug-in, which uses the same identity
+    /// while this app is closed and lets go when it opens. Giving up would
+    /// leave the port on an identity Logic has never been taught.
+    private func claimIdentity() {
+        guard identityTimer == nil else { return }
+        if tryClaimIdentity() { return }
+        Diagnostics.log("midi: port identity held elsewhere — waiting for it")
+        identityTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] timer in
+            Task { @MainActor in
+                guard let self else { return timer.invalidate() }
+                if self.tryClaimIdentity() {
+                    timer.invalidate()
+                    self.identityTimer = nil
+                }
+            }
+        }
+    }
+
+    private func tryClaimIdentity() -> Bool {
+        var current: Int32 = 0
+        MIDIObjectGetIntegerProperty(source, kMIDIPropertyUniqueID, &current)
+        if current == Self.endpointID { return true }
+        guard MIDIObjectSetIntegerProperty(source, kMIDIPropertyUniqueID, Self.endpointID) == noErr else {
+            return false
+        }
+        Diagnostics.log("midi: port identity claimed")
+        return true
+    }
+
     // MARK: - Fast lane
 
-    /// The port, readable from any thread, for the Stream Deck's dial ticks.
-    /// An endpoint is a plain number and is only ever set once, so reading it
-    /// off the main thread is safe; `MIDIReceived` may be called from anywhere.
+    /// The port, for sending from any thread. An endpoint is a plain number,
+    /// set once; `MIDIReceived` is safe from any thread.
     nonisolated(unsafe) private static var liveSource = MIDIEndpointRef()
     nonisolated(unsafe) private static var pendingLabel: String?
     nonisolated private static let labelLock = NSLock()
 
-    /// Puts a message on the port at once, from whatever thread it arrived on.
-    ///
-    /// A dial being spun sends thirty or more of these a second. Routed through
-    /// the main thread they queued behind whatever it was drawing — the lyrics,
-    /// usually — which is what made a fader lag the hand. The "Last sent" line
-    /// is still updated, with the latest message, at most ten times a second.
+    /// Puts a Stream Deck dial's tick on the port straight from the network
+    /// thread it arrived on — through the main thread, ticks queued behind
+    /// drawing and the fader lagged the hand. "Last sent" still shows the
+    /// latest, updated at most ten times a second.
     nonisolated static func sendNow(_ bytes: [UInt8], label: String) {
         let source = liveSource
         guard source != 0 else { return }
@@ -153,115 +175,264 @@ final class MIDIBridge: ObservableObject {
         }
     }
 
-    /// Called on every track change once key and tempo are known.
-    /// Claims the identity, and keeps watching until it has it.
-    ///
-    /// A fixed number of tries was not enough: whoever holds the identity
-    /// decides how long this takes, and a run of tries that ends first leaves
-    /// the app on a random identity for the rest of the session — every Logic
-    /// assignment deaf, with nothing to say so. Checking every few seconds
-    /// costs one property read and cannot be outlasted.
-    private func claimIdentity() {
-        guard identityTimer == nil else { return }
-        if tryClaimIdentity() { return }
-        Diagnostics.log("midi: port identity held elsewhere — waiting for it")
-        let timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] timer in
-            Task { @MainActor in
-                guard let self else { return timer.invalidate() }
-                if self.tryClaimIdentity() {
-                    timer.invalidate()
-                    self.identityTimer = nil
-                }
-            }
-        }
-        identityTimer = timer
-    }
+    // MARK: - Key and tempo
 
-    private func tryClaimIdentity() -> Bool {
-        var current: Int32 = 0
-        MIDIObjectGetIntegerProperty(source, kMIDIPropertyUniqueID, &current)
-        if current == Self.endpointID { return true }
-        guard MIDIObjectSetIntegerProperty(source, kMIDIPropertyUniqueID, Self.endpointID) == noErr else {
-            return false
-        }
-        Diagnostics.log("midi: port identity claimed")
-        return true
-    }
-
-    func publish(_ analysis: TrackAnalysis?) {
+    /// Sends the song's key and tempo, and bypasses or restores the tuners.
+    /// `lookupPending`: the key is still being looked up — not the same as
+    /// having none, so the tuners are left alone until the answer lands.
+    func publish(_ analysis: TrackAnalysis?, lookupPending: Bool = false) {
         guard ready, isEnabled else { return }
 
         if let key = analysis?.key, let coded = Self.encode(key: key) {
-            sendKey(root: coded.root, minor: coded.minor, reason: "song")
+            let landed = sendKey(root: coded.root, minor: coded.minor, reason: "song")
+            // Back on only once the new key is in, so nobody is tuned to the
+            // sweep on its way there.
+            if Self.bypassesWithoutKey, let text = setTunersBypassed(false, after: landed) {
+                appendNote(text)
+            }
+        } else if lookupPending {
+            note("Still looking up this song's key.")
         } else {
             note("No key for this song, so no key was sent" + (analysis?.key.map { " (couldn't read “\($0)”)" } ?? "") + ".")
+            if Self.bypassesWithoutKey, let text = setTunersBypassed(true) {
+                appendNote(text)
+            }
         }
 
         if let tempo = analysis?.tempo, tempo > 0 {
-            // MSB first, then LSB — the order hosts expect for a 14-bit pair.
-            let parts = Self.tempo14Bit(for: tempo)
-            send(cc: Self.tempoCC, value: parts.msb)
-            send(cc: Self.tempoFineCC, value: parts.lsb)
+            appendNote(sendTempo(tempo))
         }
-
         setClock(bpm: analysis?.tempo)
     }
 
-    /// The key, shaped for whichever plug-in is chosen, sent once per tuner on
-    /// that tuner's channel.
-    private func sendKey(root: Int, minor: Bool, reason: String) {
-        let plugin = PitchPlugin.current
-        let messages = plugin.messages(root: root, minor: minor,
-                                       invertNotes: PitchPlugin.invertsNotes,
-                                       reading: plugin.reading)
-        // Logic's Pickup mode ignores a controller until it "reaches" the
-        // parameter's current value. A single jump to the new key never does,
-        // so it was dropped — while the Learn button's sweep, which passes
-        // through every value, got through every time. That difference is the
-        // whole symptom as reported from the rig. So each key goes out the
-        // way Learn sends it: a run from 0 to 127, then the value itself.
-        keyGeneration += 1
-        let generation = keyGeneration
-        let endpoint = source
-        let path: [UInt8] = Self.catchesUp ? [0, 21, 42, 64, 85, 106, 127] : []
-        for (step, value) in (path.map { Optional($0) } + [nil]).enumerated() {
-            let transmit: @MainActor @Sendable () -> Void = { [weak self] in
-                guard let self, self.keyGeneration == generation else { return }
-                for channel in 0..<PitchPlugin.tunerCount {
-                    for message in messages {
-                        Self.transmit([0xB0 | UInt8(channel), message.cc, min(127, value ?? message.value)],
-                                      from: endpoint)
-                    }
-                }
-            }
-            if step == 0 { transmit() } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.04, execute: transmit)
-            }
-        }
-        let values = messages.map { "CC \($0.cc) = \($0.value)" }.joined(separator: ", ")
-        let mics = PitchPlugin.tunerCount == 1
-            ? "channel 1"
-            : "channels 1–\(PitchPlugin.tunerCount), one per mic"
-        note("\(PitchPlugin.noteNames[root]) \(minor ? "minor" : "major") (\(reason)) → \(values) on \(mics).")
+    /// A key picked in Settings, sent at once, to check the plug-in by eye.
+    func sendTest(root: Int, minor: Bool) {
+        guard ready, isEnabled else { return }
+        sendKey(root: root, minor: minor, reason: "test")
     }
 
-    private static let clock: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "h:mm:ss a"
-        return f
-    }()
+    /// The key, shaped for the chosen plug-in, on every mic's channel.
+    /// Returns how long until it has landed.
+    @discardableResult
+    private func sendKey(root: Int, minor: Bool, reason: String) -> TimeInterval {
+        let plugin = PitchPlugin.current
+        let perTuner = plugin.messages(root: root, minor: minor,
+                                       invertNotes: PitchPlugin.invertsNotes, reading: plugin.reading)
+        let messages = (0..<PitchPlugin.tunerCount).flatMap { channel in
+            perTuner.map { (status: 0xB0 | UInt8(channel), cc: $0.cc, value: $0.value) }
+        }
+        keyGeneration += 1
+        let generation = keyGeneration
+        let landed = sweep(messages, through: Self.catchesUp ? Self.fullRange : []) { [weak self] in
+            self?.keyGeneration == generation
+        }
 
-    private func note(_ text: String) {
-        lastSent = "\(Self.clock.string(from: Date()))  \(text)"
-        Diagnostics.log("midi: \(text)")
+        let key = "\(PitchPlugin.noteNames[root]) \(minor ? "minor" : "major") (\(reason))"
+        if plugin.scheme == .noteSwitches {
+            sentKey = SentKey(name: "\(PitchPlugin.noteNames[root]) \(minor ? "minor" : "major")",
+                              on: PitchPlugin.notes(root: root, minor: minor),
+                              due: Date().addingTimeInterval(landed + 1.5))
+            // By note name: "C off" is what MetaTune should show.
+            let lists = PitchPlugin.noteLists(root: root, minor: minor)
+            note("\(key) → MetaTune: on \(lists.on.joined(separator: " ")) · off \(lists.off.joined(separator: " "))\(PitchPlugin.invertsNotes ? " (sent inverted)" : "") on \(Self.micChannels).")
+        } else {
+            let values = perTuner.map { "CC \($0.cc) = \($0.value)" }.joined(separator: ", ")
+            note("\(key) → \(values) on \(Self.micChannels).")
+        }
+        return landed
+    }
+
+    /// The tempo alone, to check Logic against the song.
+    func sendTempoNow(_ analysis: TrackAnalysis?) {
+        guard ready, isEnabled else { return }
+        guard let tempo = analysis?.tempo, tempo > 0 else {
+            note("No tempo for this song, so none was sent.")
+            return
+        }
+        note(sendTempo(tempo))
+    }
+
+    /// Returns what to report.
+    private func sendTempo(_ tempo: Double) -> String {
+        let bpm = Self.logicTempo(for: tempo)
+        let bend = Self.pitchBend(for: bpm)
+        Self.transmit(Self.tempoMessage(bend), from: source)
+        let rounded = abs(tempo - Double(bpm)) >= 0.05
+            ? String(format: " (the song's %.1f, to the whole BPM Logic keeps)", tempo) : ""
+        return "Tempo \(bpm) BPM\(rounded) → pitch bend \(bend) on channel \(Self.tempoChannel + 1)."
+    }
+
+    // MARK: - Bypass with no key
+
+    private static func bypassValue(_ bypassed: Bool) -> UInt8 {
+        bypassed != bypassInverted ? 127 : 0
+    }
+
+    /// Bypasses every mic's tuner, or restores it — only when that's a change,
+    /// unless `force`d. Returns what was sent, in words.
+    ///
+    /// Each change goes out as the opposite value, then the new one. With the
+    /// tuner where Studio One left it, the first changes nothing; a Direct or
+    /// Scaled assignment lands on the second, one in Pickup mode is caught by
+    /// the first, and one Logic learned as a toggle flips exactly once.
+    private func setTunersBypassed(_ bypassed: Bool, force: Bool = false,
+                                   after delay: TimeInterval = 0) -> String? {
+        bypassGeneration += 1
+        guard force || bypassed != tunersBypassed else { return nil }
+        let generation = bypassGeneration
+        let endpoint = source
+        let value = Self.bypassValue(bypassed)
+        let transmit: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self, self.bypassGeneration == generation else { return }
+            self.tunersBypassed = bypassed
+            for channel in 0..<PitchPlugin.tunerCount {
+                for sent in [127 - value, value] {
+                    Self.transmit([0xB0 | UInt8(channel), Self.bypassCC, sent], from: endpoint)
+                }
+            }
+        }
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: transmit)
+        } else {
+            transmit()
+        }
+        return "\(bypassed ? "Tuners bypassed" : "Tuners back on") → CC \(Self.bypassCC) = \(value) on \(Self.micChannels)."
+    }
+
+    /// Settings' test buttons. Sent whatever the tuners were last told, so a
+    /// tuner switched by hand in Logic can be brought back in line.
+    func sendBypass(_ bypassed: Bool) {
+        guard ready, isEnabled, let text = setTunersBypassed(bypassed, force: true) else { return }
+        note("Test: " + text)
+    }
+
+    /// Switching the feature off mustn't strand the tuners bypassed.
+    func bypassTurnedOff() {
+        guard ready, isEnabled, tunersBypassed,
+              let text = setTunersBypassed(false, force: true) else { return }
+        note("Bypass with no key turned off: " + text)
+    }
+
+    // MARK: - Learning
+
+    enum LearnTarget: Equatable {
+        case key, mode
+        /// The tuner's bypass, for songs with no key.
+        case bypass
+        /// One of MetaTune's twelve note switches, 0 = C.
+        case note(Int)
+
+        var name: String {
+            switch self {
+            case .key:             return "key"
+            case .mode:            return "scale"
+            case .bypass:          return "bypass"
+            case .note(let pitch): return "\(PitchPlugin.noteNames[pitch]) switch"
+            }
+        }
+    }
+
+    /// Something for Logic's Learn Mode to bind to, on demand: one controller
+    /// swept across its range — Learn Mode waits for a control to move — then
+    /// left at the value in use. `tuner` picks the mic's channel. Works with
+    /// nothing playing, so assignments can be set up before the first song.
+    func sendForLearn(_ analysis: TrackAnalysis?, control: LearnTarget, tuner: Int = 0) {
+        guard ready, isEnabled else { return }
+
+        let plugin = PitchPlugin.current
+        let keyMessages = analysis?.key.flatMap(Self.encode(key:)).map {
+            plugin.messages(root: $0.root, minor: $0.minor,
+                            invertNotes: PitchPlugin.invertsNotes, reading: plugin.reading)
+        } ?? []
+        let channel = UInt8(min(max(tuner, 0), 15))
+
+        let cc: UInt8
+        let settled: UInt8
+        switch control {
+        case .key:
+            cc = PitchPlugin.rootCC
+            settled = keyMessages.first { $0.cc == cc }?.value ?? 64
+        case .mode:
+            cc = PitchPlugin.modeCC
+            settled = keyMessages.first { $0.cc == cc }?.value ?? 127
+        case .note(let pitchClass):
+            // Left on whatever the song: settling to the song's key put an
+            // out-of-key switch straight back out, which looked like a failed
+            // learn. The key is applied with the next song.
+            cc = PitchPlugin.noteCC(pitchClass)
+            settled = PitchPlugin.invertsNotes ? 0 : 127
+        case .bypass:
+            // Where the tuners were last told to be, so Logic and Studio One
+            // agree from the start.
+            cc = Self.bypassCC
+            settled = Self.bypassValue(tunersBypassed)
+        }
+        sweep([(0xB0 | channel, cc, settled)], through: Self.fullRange)
+
+        let mic = PitchPlugin.tunerCount == 1 ? "" : " for Mic \(Int(channel) + 1)"
+        let left = control == .bypass ? ", left \(tunersBypassed ? "bypassed" : "on")" : ""
+        note("Learn: \(control.name)\(mic) → CC \(cc) on channel \(Int(channel) + 1), swept 0–127\(left).")
+    }
+
+    /// Pitch bend from one end to the other, then the song's tempo (or 120),
+    /// for Logic's Learn Mode, which waits for a control to move. Logic learns
+    /// it as `EF Lo7 Hi7`, all fourteen bits, and needs only pointing at the
+    /// tempo afterwards.
+    func learnTempo(_ analysis: TrackAnalysis?) {
+        guard ready, isEnabled else { return }
+        let endpoint = source
+        let settled = Self.pitchBend(for: Self.logicTempo(for: analysis?.tempo ?? 120))
+        for (step, bend) in [0, 4_096, 8_192, 12_288, 16_383, settled].enumerated() {
+            let message = Self.tempoMessage(bend)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.04) {
+                Self.transmit(message, from: endpoint)
+            }
+        }
+        note("Learn: tempo → pitch bend on channel \(Self.tempoChannel + 1), swept end to end.")
+    }
+
+    /// Lights each of MetaTune's note switches alone, C to B, on one mic's
+    /// channel, then puts the song's key back — so a switch learned wrongly,
+    /// or not at all, shows itself. Each switch goes to both ends before
+    /// landing, to get past Pickup mode.
+    func walkNoteSwitches(tuner: Int, restoring analysis: TrackAnalysis?) {
+        guard ready, isEnabled else { return }
+        walkGeneration += 1
+        keyGeneration += 1            // stops any key sweep still in flight
+        let generation = walkGeneration
+        let channel = UInt8(min(max(tuner, 0), 15))
+        let endpoint = source
+        let inverted = PitchPlugin.invertsNotes
+        for step in 0...12 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.9) { [weak self] in
+                guard let self, self.walkGeneration == generation else { return }
+                guard step < 12 else {
+                    if analysis?.key != nil { self.publish(analysis) }
+                    else { self.note("Walk done. Nothing is playing, so no key was put back.") }
+                    return
+                }
+                for pitchClass in 0..<12 {
+                    let on = (pitchClass == step) != inverted
+                    for value: UInt8 in [0, 127, on ? 127 : 0] {
+                        Self.transmit([0xB0 | channel, PitchPlugin.noteCC(pitchClass), value], from: endpoint)
+                    }
+                }
+                self.note("Walking the switches, Mic \(Int(channel) + 1): \(PitchPlugin.noteNames[step]) alone should be lit (CC \(PitchPlugin.noteCC(step))).")
+                if channel == 0 {
+                    // Each step checked before the next: a switch learned
+                    // wrongly shows up by name.
+                    self.sentKey = SentKey(name: "\(PitchPlugin.noteNames[step]) alone (walk)", on: [step],
+                                           due: Date().addingTimeInterval(0.8))
+                }
+            }
+        }
     }
 
     // MARK: - Mixer
 
-    /// One step of a mic-channel dial. See `MixerControl`.
+    /// One step of a mic-channel dial. Not gated on `isEnabled`, which is
+    /// about publishing key and tempo by itself; this is someone turning a dial.
     func sendMixer(_ control: MixerControl, ticks: Int) {
-        // Not gated on `isEnabled`: that switch is about publishing key and
-        // tempo by itself. This is someone turning a dial.
         guard ready, control.kind == .dial, ticks != 0 else { return }
         let value = MixerControl.value(forTicks: ticks)
         send(cc: control.cc, value: value, channel: MixerControl.channel)
@@ -275,24 +446,23 @@ final class MIDIBridge: ObservableObject {
         note("\(control.name) → CC \(control.cc) = 127 on channel \(MixerControl.channel + 1).")
     }
 
-    /// Any controller message, for the Stream Deck's freely-assignable actions.
-    /// Kept on this one port so an assignment learned in Logic answers whether
-    /// the message came from here or from the deck sending it itself.
+    /// Any controller message, for the Stream Deck's assignable actions — on
+    /// this port, so an assignment answers whether it came from here or from
+    /// the deck sending it itself.
     func sendRaw(cc: UInt8, value: UInt8, channel: UInt8, label: String?) {
         guard ready else { return }
         send(cc: cc, value: value, channel: channel)
         note("\(label ?? "MIDI") → CC \(cc) = \(value) on channel \(channel + 1).")
     }
 
-    /// Something for Logic's Learn Mode to catch. A dial has to be seen moving
-    /// both ways or Logic can't tell it is an encoder; a button has to be seen
-    /// pressed and released.
+    /// For Learn Mode: a dial has to be seen turning both ways to be taken for
+    /// an encoder, and a button pressed and released.
     func sendMixerForLearn(_ control: MixerControl) {
         guard ready else { return }
         let endpoint = source
         let steps: [UInt8] = control.kind == .dial
-            ? (0..<6).map { _ in MixerControl.value(forTicks: 1) }
-                + (0..<2).map { _ in MixerControl.value(forTicks: -1) }
+            ? Array(repeating: MixerControl.value(forTicks: 1), count: 6)
+                + Array(repeating: MixerControl.value(forTicks: -1), count: 2)
             : [127, 0, 127, 0]
         for (index, value) in steps.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.06) {
@@ -304,131 +474,39 @@ final class MIDIBridge: ObservableObject {
 
     // MARK: - Song controls
 
-    private var songGeneration = 0
-
-    /// A song's settings, on its start. See `SongControl`. Swept then landed,
-    /// like the key and for the same reason — Logic's Pickup mode ignores a
-    /// jump — unless `sweep` is false, as for a slider being dragged, which
-    /// passes through the values on its own.
-    func sendSongControls(_ messages: [(cc: UInt8, value: UInt8)], sweep: Bool, label: String) {
+    /// A song's plug-in settings as it starts (see `SongControl`), swept like
+    /// the key — unless `sweep` is off, for a slider being dragged, which
+    /// passes through the values by itself.
+    func sendSongControls(_ messages: [(cc: UInt8, value: UInt8)], sweep sweeping: Bool, label: String) {
         guard ready, isEnabled, !messages.isEmpty else { return }
         songGeneration += 1
         let generation = songGeneration
-        let endpoint = source
-        let path: [UInt8] = sweep && Self.catchesUp ? [0, 21, 42, 64, 85, 106, 127] : []
-        for (step, value) in (path.map { Optional($0) } + [nil]).enumerated() {
-            let transmit: @MainActor @Sendable () -> Void = { [weak self] in
-                guard let self, self.songGeneration == generation else { return }
-                for message in messages {
-                    Self.transmit([0xB0 | SongControl.channel, message.cc, value ?? message.value],
-                                  from: endpoint)
-                }
-            }
-            if step == 0 { transmit() } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.04, execute: transmit)
-            }
+        sweep(messages.map { (0xB0 | SongControl.channel, $0.cc, $0.value) },
+              through: sweeping && Self.catchesUp ? Self.fullRange : []) { [weak self] in
+            self?.songGeneration == generation
         }
         let values = messages.map { "CC \($0.cc) = \($0.value)" }.joined(separator: ", ")
         note("\(label) → \(values) on channel \(SongControl.channel + 1).")
     }
 
-    /// Something for Learn Mode to bind to: a sweep, then the value in use.
     func sendSongControlForLearn(slot: Int, settle: Int) {
         guard ready else { return }
-        let endpoint = source
         let cc = SongControl.cc(slot)
-        for (index, value) in ([0, 21, 42, 64, 85, 106, 127, UInt8(min(127, max(0, settle)))]).enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.04) {
-                Self.transmit([0xB0 | SongControl.channel, cc, value], from: endpoint)
-            }
-        }
+        sweep([(0xB0 | SongControl.channel, cc, UInt8(min(127, max(0, settle))))], through: Self.fullRange)
         note("Learn: song control \(slot + 1) on CC \(cc), channel \(SongControl.channel + 1).")
     }
 
-    /// Sends a chosen key straight away, so the plug-in can be checked by eye
-    /// without waiting for a song in that key to come up.
-    func sendTest(root: Int, minor: Bool) {
-        guard ready, isEnabled else { return }
-        sendKey(root: root, minor: minor, reason: "test")
-    }
+    // MARK: - Clock
 
-    /// Sends the current values on demand, so a DAW sitting in MIDI-learn mode
-    /// has something to bind to without waiting for the next track change.
-    ///
-    /// Falls back to mid-range values when nothing is playing — you should be
-    /// able to set the mapping up before starting a song.
-    /// `tuner` picks the channel, so each mic's plug-in is learned against its
-    /// own. Tempo always goes on the first.
-    func sendForLearn(_ analysis: TrackAnalysis?, control: LearnTarget, tuner: Int = 0) {
-        guard ready, isEnabled else { return }
-
-        let plugin = PitchPlugin.current
-        let coded = analysis?.key.flatMap(Self.encode(key:))
-        let keyMessages = coded.map {
-            plugin.messages(root: $0.root, minor: $0.minor,
-                            invertNotes: PitchPlugin.invertsNotes, reading: plugin.reading)
-        } ?? []
-        let channel = control == .tempo ? UInt8(0) : UInt8(min(max(tuner, 0), 15))
-
-        let cc: UInt8
-        let settled: UInt8
-
-        switch control {
-        case .key:
-            cc = PitchPlugin.rootCC
-            settled = keyMessages.first { $0.cc == cc }?.value ?? 64
-        case .mode:
-            cc = PitchPlugin.modeCC
-            settled = keyMessages.first { $0.cc == cc }?.value ?? 127
-        case .note(let pitchClass):
-            cc = PitchPlugin.noteCC(pitchClass)
-            settled = keyMessages.first { $0.cc == cc }?.value ?? 127
-        case .tempo:
-            cc = Self.tempoCC
-            settled = analysis?.tempo.map { Self.tempo14Bit(for: $0).msb } ?? 64
-        }
-
-        // A host in learn mode is waiting for a control to *move*. One lone
-        // message often isn't enough to recognise — a hardware knob emits a
-        // stream. Sweep the range, then settle on the real value.
-        let sweep: [UInt8] = [0, 21, 42, 64, 85, 106, 127, settled]
-        let endpoint = source
-
-        let fine: UInt8? = control == .tempo ? Self.tempoFineCC : nil
-        let settledFine = analysis?.tempo.map { Self.tempo14Bit(for: $0).lsb } ?? 0
-
-        for (step, value) in sweep.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.04) {
-                Self.transmit([0xB0 | channel, cc, min(127, value)], from: endpoint)
-                // Send the fine half too, so a host learning tempo sees the pair.
-                if let fine {
-                    let lsb = value == settled ? settledFine : value
-                    Self.transmit([0xB0 | channel, fine, min(127, lsb)], from: endpoint)
-                }
-            }
-        }
-    }
-
-    enum LearnTarget: Equatable {
-        case key, mode, tempo
-        /// One of MetaTune's twelve note switches, 0 = C.
-        case note(Int)
-    }
-
-    /// MIDI beat clock, off unless explicitly enabled — Logic only follows it in
-    /// external sync, which slaves its transport as well as its tempo.
+    /// MIDI beat clock, off unless chosen: Logic only follows it in external
+    /// sync, which slaves its transport as well as its tempo.
     func setClock(bpm: Double?) {
-        clockTimer?.cancel()
-        clockTimer = nil
-
+        stopClock()
         guard ready, isEnabled, clockEnabled, let bpm, bpm > 20, bpm < 400 else { return }
-
         let endpoint = source
-        let timer = DispatchSource.makeTimerSource(
-            queue: DispatchQueue.global(qos: .userInteractive))
-        // 24 pulses per quarter note is the MIDI clock standard.
-        timer.schedule(deadline: .now(), repeating: 60.0 / (bpm * 24.0),
-                       leeway: .nanoseconds(100_000))
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
+        // 24 pulses per quarter note.
+        timer.schedule(deadline: .now(), repeating: 60.0 / (bpm * 24.0), leeway: .nanoseconds(100_000))
         timer.setEventHandler { Self.transmit([0xF8], from: endpoint) }
         timer.resume()
         clockTimer = timer
@@ -439,61 +517,128 @@ final class MIDIBridge: ObservableObject {
         clockTimer = nil
     }
 
-    // MARK: - Encoding
+    // MARK: - "Last sent"
 
-    /// "F♯m" → (root 6, minor). Handles both ♯/♭ and #/b spellings.
-    /// The inverse of `encode`, for nudging a key by semitones. Sharps rather
-    /// than flats throughout, so a nudge never flips notation mid-song.
-    static func decode(root: Int, minor: Bool) -> String {
-        let names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
-        return names[((root % 12) + 12) % 12] + (minor ? "m" : "")
+    private static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm:ss a"
+        return f
+    }()
+
+    private func note(_ text: String) {
+        lastSent = "\(Self.clock.string(from: Date()))  \(text)"
+        Diagnostics.log("midi: \(text)")
     }
 
-    static func encode(key: String) -> (root: Int, minor: Bool)? {
-        let text = key.trimmingCharacters(in: .whitespaces)
-        let naturals: [Character: Int] = ["C": 0, "D": 2, "E": 4, "F": 5,
-                                          "G": 7, "A": 9, "B": 11]
-        guard let head = text.first,
-              var index = naturals[Character(head.uppercased())] else { return nil }
+    /// Adds to the line just written, for something sent at the same moment.
+    private func appendNote(_ text: String) {
+        lastSent += "  " + text
+        Diagnostics.log("midi: \(text)")
+    }
 
-        var rest = text.dropFirst()
-        if rest.hasPrefix("♯") || rest.hasPrefix("#") { index += 1; rest = rest.dropFirst() }
-        else if rest.hasPrefix("♭") || rest.hasPrefix("b") { index -= 1; rest = rest.dropFirst() }
-
-        // The quality is whatever follows the note. This used to test only
-        // for a trailing "m", so "A minor", "E♭ minor" and "G min" all read
-        // as major — the wrong scale sent to the tuners, silently. Now "m",
-        // "min", "minor" and "m7" are minor; "maj", "major" and a capital
-        // "M" (the classical spelling of major) are not.
-        let quality = rest.trimmingCharacters(in: .whitespaces)
-        let lowered = quality.lowercased()
-        let capitalMajor = quality.hasPrefix("M") && !lowered.hasPrefix("mi")
-        let minor = lowered.hasPrefix("m") && !lowered.hasPrefix("maj") && !capitalMajor
-
-        return ((index % 12 + 12) % 12, minor)
+    /// "channel 1", or "channels 1–2, one per mic".
+    private static var micChannels: String {
+        PitchPlugin.tunerCount == 1 ? "channel 1" : "channels 1–\(PitchPlugin.tunerCount), one per mic"
     }
 
     // MARK: - Transmission
+
+    /// Values from one end of the range to the other.
+    private static let fullRange: [UInt8] = [0, 21, 42, 64, 85, 106, 127]
+
+    /// Sends every message at each of `values` in turn, 40 ms apart, then at
+    /// its own value; returns when that lands. Logic's Pickup mode ignores a
+    /// jump to a new value until the controller passes the parameter's
+    /// current one, and Learn Mode waits for a control to move — a run across
+    /// the range gets past both. Stops early once `current` says a newer send
+    /// has taken over.
+    @discardableResult
+    private func sweep(_ messages: [(status: UInt8, cc: UInt8, value: UInt8)], through values: [UInt8],
+                       while current: @escaping @MainActor () -> Bool = { true }) -> TimeInterval {
+        let endpoint = source
+        let steps = values.map { Optional($0) } + [nil]
+        for (step, value) in steps.enumerated() {
+            let send: @MainActor @Sendable () -> Void = {
+                guard current() else { return }
+                for message in messages {
+                    Self.transmit([message.status, message.cc, value ?? message.value], from: endpoint)
+                }
+            }
+            if step == 0 { send() } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.04, execute: send)
+            }
+        }
+        return Double(steps.count) * 0.04
+    }
 
     private func send(cc: UInt8, value: UInt8, channel: UInt8 = 0) {
         Self.transmit([0xB0 | (channel & 0x0F), cc, min(127, value)], from: source)
     }
 
-    /// nonisolated so the clock timer can transmit from its own queue;
-    /// MIDIReceived is safe to call from any thread.
-    nonisolated private static func transmit(_ bytes: [UInt8], from endpoint: MIDIEndpointRef) {
+    /// Callable from any thread — the clock's timer and the fast lane send
+    /// from their own.
+    nonisolated static func transmit(_ bytes: [UInt8], from endpoint: MIDIEndpointRef) {
         var payload = bytes
         var list = MIDIPacketList()
-
-        // The pointer has to stay valid for the whole build-and-send sequence.
-        // Taking it with `UnsafeMutablePointer(&list)` yields one that dies at the
-        // end of that call, which the compiler flags as a dangling pointer.
+        // One pointer for the whole build-and-send: `UnsafeMutablePointer(&list)`
+        // would dangle after its first use.
         withUnsafeMutablePointer(to: &list) { pointer in
             var packet = MIDIPacketListInit(pointer)
-            packet = MIDIPacketListAdd(pointer,
-                                       MemoryLayout<MIDIPacketList>.size,
+            packet = MIDIPacketListAdd(pointer, MemoryLayout<MIDIPacketList>.size,
                                        packet, 0, payload.count, &payload)
             _ = MIDIReceived(endpoint, pointer)
         }
+    }
+}
+
+// MARK: - Encoding
+
+extension MIDIBridge {
+
+    /// Logic's tempo range. An assignment spreads pitch bend's 0–16383 across
+    /// it evenly — measured in Logic 12: 0 is 5 BPM, 8192 is 498, 16383 is 990.
+    nonisolated static let logicTempoRange = 5...990
+
+    /// What Logic will take: it keeps a tempo from a controller to the whole
+    /// BPM, so 124.3 arrives as 124 whatever the resolution sent.
+    nonisolated static func logicTempo(for bpm: Double) -> Int {
+        min(logicTempoRange.upperBound, max(logicTempoRange.lowerBound, Int(bpm.rounded())))
+    }
+
+    /// The pitch bend Logic scales to `bpm` — within 0.03 BPM, so it can only
+    /// round to that whole number.
+    nonisolated static func pitchBend(for bpm: Int) -> Int {
+        let span = Double(logicTempoRange.upperBound - logicTempoRange.lowerBound)
+        return Int((Double(bpm - logicTempoRange.lowerBound) / span * 16_383).rounded())
+    }
+
+    /// Pitch bend carries its value low seven bits first.
+    nonisolated static func tempoMessage(_ bend: Int) -> [UInt8] {
+        [0xE0 | tempoChannel, UInt8(bend & 0x7F), UInt8(bend >> 7)]
+    }
+
+    /// "F♯m" → (6, minor). Takes ♯/♭ or #/b, and reads the quality after the
+    /// note: "m", "min", "minor" and "m7" are minor; "maj", "major" and a
+    /// capital "M" are major.
+    nonisolated static func encode(key: String) -> (root: Int, minor: Bool)? {
+        let text = key.trimmingCharacters(in: .whitespaces)
+        let naturals: [Character: Int] = ["C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11]
+        guard let head = text.first, var index = naturals[Character(head.uppercased())] else { return nil }
+
+        var rest = text.dropFirst()
+        if rest.hasPrefix("♯") || rest.hasPrefix("#") { index += 1; rest = rest.dropFirst() }
+        else if rest.hasPrefix("♭") || rest.hasPrefix("b") { index -= 1; rest = rest.dropFirst() }
+
+        let quality = rest.trimmingCharacters(in: .whitespaces)
+        let lowered = quality.lowercased()
+        let capitalMajor = quality.hasPrefix("M") && !lowered.hasPrefix("mi")
+        let minor = lowered.hasPrefix("m") && !lowered.hasPrefix("maj") && !capitalMajor
+        return ((index % 12 + 12) % 12, minor)
+    }
+
+    /// The inverse of `encode`, in sharps, so nudging a key never flips its
+    /// spelling mid-song.
+    static func decode(root: Int, minor: Bool) -> String {
+        PitchPlugin.noteNames[((root % 12) + 12) % 12] + (minor ? "m" : "")
     }
 }

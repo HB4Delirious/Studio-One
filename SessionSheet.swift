@@ -6,13 +6,15 @@ struct SessionSheet: View {
     @ObservedObject private var server = RequestServer.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showing = Door.guests
+    @AppStorage(RequestServer.guestLyricsKey) private var guestLyrics = true
+    @AppStorage(RequestServer.guestHistoryKey) private var guestHistory = true
 
     /// Which code is on screen. Kept as one at a time and clearly labelled:
     /// two QR codes side by side is exactly how the remote gets handed to the
     /// room by mistake.
     private enum Door: String, CaseIterable, Identifiable {
-        case guests = "For guests"
-        case remote = "My remote"
+        case guests = "For Guests"
+        case remote = "My Remote"
         var id: String { rawValue }
     }
 
@@ -37,20 +39,31 @@ struct SessionSheet: View {
 
                         if showing == .guests, let address = server.guestAddress {
                             live(address,
-                                 blurb: "Guests scan this, give a nickname, then search what's on this Mac. Their picks join the queue under their name. They can't skip or pause.",
-                                 caution: "Everyone has to be on the same Wi-Fi. Anyone with this code can add a song — that's the point at a party, but it means don't share it further than the room.")
+                                 blurb: "Guests scan this, give a name and pick from your library.",
+                                 caution: "Guests give a nickname, then search what's on this Mac; their picks join the queue under their name, and they can't skip or pause. Everyone has to be on the same Wi-Fi. Anyone with this code can add a song — that's the point at a party, but don't share it further than the room.")
                         } else if let address = server.remoteAddress {
                             live(address,
-                                 blurb: "Your own phone: play, pause, skip, scrub, search and start anything in the library.",
-                                 caution: "This one controls playback. Keep it to yourself — hand out the guest code instead.")
+                                 blurb: "Your own phone: transport, volume, key, search and the queue.",
+                                 caution: "This one controls playback: play, pause, skip, scrub, fade, search and start anything in the library. Keep it to yourself — hand out the guest code instead.")
                         }
                     } else {
                         idle
                     }
 
+                    if model.requestQueue != nil {
+                        SettingsSection("Guest page") {
+                            Toggle("Guests can follow the lyrics on their phones", isOn: $guestLyrics)
+                                .font(.system(size: 12))
+                                .info("A Lyrics tab on the guest page, in time with the screen, the line being sung lit in its duet colour, and who's up next during a break.")
+                            Toggle("Returning guests see the songs they've sung before", isOn: $guestHistory)
+                                .font(.system(size: 12))
+                                .info("Found in History by the name they request under, so two guests using one name share a list. One tap requests one again.")
+                        }
+                    }
+
                     if !server.received.isEmpty {
                         Divider().overlay(Theme.hairline)
-                        Text("REQUESTED").font(Theme.label).foregroundStyle(Theme.upcoming)
+                        Text("REQUESTED").font(Theme.label).foregroundStyle(Theme.secondary)
                         VStack(alignment: .leading, spacing: 5) {
                             ForEach(Array(server.received.prefix(12).enumerated()), id: \.offset) { _, line in
                                 Text(line).font(.system(size: 12)).lineLimit(1)
@@ -61,7 +74,9 @@ struct SessionSheet: View {
                 .padding(20)
             }
         }
-        .frame(width: 430, height: 600)
+        // Short until there's a code to show.
+        .frame(width: 430, height: server.running || !server.received.isEmpty ? 620
+               : model.requestQueue == nil ? 220 : 340)
         .background(Theme.panel)
         .preferredColorScheme(.dark)
     }
@@ -80,7 +95,10 @@ struct SessionSheet: View {
                 Spacer()
             }
 
-            Text(blurb).font(.system(size: 12)).foregroundStyle(Theme.upcoming)
+            HStack(spacing: 6) {
+                Text(blurb).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                InfoButton(caution)
+            }
 
             HStack(spacing: 8) {
                 Text(address.absoluteString)
@@ -95,39 +113,43 @@ struct SessionSheet: View {
             }
 
             HStack(spacing: 10) {
-                Button("Play the requests") { model.performOnBrowser { try await $0.playRequests() } }
+                Button("Play the Requests") { model.performOnRequestQueue { try await $0.playRequests() } }
+                    .glassButton(prominent: true, tint: model.palette.accent)
                     .disabled(server.received.isEmpty)
                 Button("Stop") { server.stop() }
+                    .glassButton()
                 Spacer()
             }
-
-            Text(caution).font(.system(size: 11)).foregroundStyle(Theme.upcoming)
         }
     }
 
+    /// Not started: what it is in a line, and the one button — or, following
+    /// Spotify, the button that makes it possible.
+    @ViewBuilder
     private var idle: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Two codes: one for guests to request songs, one to drive playback from your own phone. Requests land in a playlist called “\(AppleMusicController.requestsPlaylist)”.")
-                .font(.system(size: 13))
-
-            Text("They can only request what's already in your library — Apple Music's scripting interface searches your library, never the catalogue. There is no way around that from outside the app.")
-                .font(.system(size: 11)).foregroundStyle(Theme.upcoming)
-
-            if let failure = server.failure {
-                Label(failure, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12)).foregroundStyle(Theme.sung)
+        VStack(alignment: .leading, spacing: 14) {
+            if model.requestQueue == nil {
+                Text("Guests request from your Apple Music library, so the request line needs Apple Music as the player.")
+                    .font(.system(size: 13))
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Switch to Apple Music") { model.changeSource(to: .appleMusic) }
+                    .controlSize(.large)
+                    .glassButton(prominent: true, tint: model.palette.accent)
+            } else {
+                HStack(spacing: 6) {
+                    Text("Guests scan a code and add songs to “\(AppleMusicController.requestsPlaylist)”. A second code is your own remote.")
+                        .font(.system(size: 13))
+                        .fixedSize(horizontal: false, vertical: true)
+                    InfoButton("Guests can only request what's already in your library — Apple Music's scripting searches your library, never the catalogue, and there's no way around that from outside the app.\n\nThe first time it starts, macOS may ask whether to allow incoming connections. That prompt needs your click.")
+                }
+                if let failure = server.failure {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12)).foregroundStyle(Theme.sung)
+                }
+                Button("Start the Request Line") { server.start(model: model) }
+                    .controlSize(.large)
+                    .glassButton(prominent: true, tint: model.palette.accent)
             }
-
-            Button("Start the request line") { server.start(model: model) }
-                .disabled(model.browser?.canTakeRequests != true)
-
-            if model.browser?.canTakeRequests != true {
-                Text("Switch the source to Apple Music first — the request line adds to a Music playlist, which Spotify's side can't do.")
-                    .font(.system(size: 11)).foregroundStyle(Theme.upcoming)
-            }
-
-            Text("The first time it starts, macOS may ask whether to allow incoming connections. That prompt needs your click; nothing can answer it for you.")
-                .font(.system(size: 11)).foregroundStyle(Theme.upcoming)
         }
     }
 }

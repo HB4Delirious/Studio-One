@@ -38,17 +38,23 @@ actor LyricsProvider {
 
     // MARK: - Public
 
-    func lyrics(for track: SpotifyTrack) async -> LyricsResult {
+    func lyrics(for track: PlayerTrack) async -> LyricsResult {
+        await lookup(track).result
+    }
+
+    /// The lyrics, and whether the answer can be trusted: false when nothing
+    /// was found only because LRCLIB couldn't be reached.
+    func lookup(_ track: PlayerTrack) async -> (result: LyricsResult, reached: Bool) {
         let key = track.trackID
 
-        if let cached = memoryCache[key] { return cached }
+        if let cached = memoryCache[key] { return (cached, true) }
         // Your own timing wins over anything downloaded.
         if let mine = readUser(key) {
             let parsed = LRCParser.parse(mine)
             if !parsed.isEmpty {
                 let result = LyricsResult.synced(parsed)
                 memoryCache[key] = result
-                return result
+                return (result, true)
             }
         }
         if let disk = readDisk(key) {
@@ -56,13 +62,16 @@ actor LyricsProvider {
             if !parsed.isEmpty {
                 let result = LyricsResult.synced(parsed)
                 memoryCache[key] = result
-                return result
+                return (result, true)
             }
         }
 
-        let result = await fetch(track)
+        let (result, reached) = await fetch(track)
+        // "Nothing found" is remembered only when LRCLIB actually answered,
+        // not when it couldn't be reached.
+        if case .notFound = result, !reached { return (result, false) }
         memoryCache[key] = result
-        return result
+        return (result, true)
     }
 
     /// Force a re-fetch, e.g. when the auto match is obviously the wrong song.
@@ -73,48 +82,48 @@ actor LyricsProvider {
 
     // MARK: - Fetching
 
-    private func fetch(_ track: SpotifyTrack) async -> LyricsResult {
+    /// The lyrics, and whether every LRCLIB lookup got an answer — found or
+    /// not — rather than failing to connect.
+    private func fetch(_ track: PlayerTrack) async -> (LyricsResult, reached: Bool) {
         let title = Self.normalizeTitle(track.name)
 
-        // The artist as given first, then just the first name in it. Cutting
-        // straight to the first name — the old way — turned "Earth, Wind &
-        // Fire" into "Earth", which LRCLIB matches to a different band, and
-        // "Daryl Hall & John Oates" into "Daryl Hall", which found only
-        // untimed lyrics where the full name finds timed ones. Checked against
-        // LRCLIB for both. Featured-artist credits still fall back correctly.
+        // The artist as given, then only the first name in it: "Earth, Wind &
+        // Fire" cut to "Earth" matches a different band, but a featured
+        // artist's credit needs cutting.
         let full = track.artist.trimmingCharacters(in: .whitespaces)
         let primary = Self.normalizeArtist(track.artist)
         let artists = primary == full ? [full] : [full, primary]
 
         var untimed: [LyricsRecord?] = []
+        var reached = true
         for artist in artists {
-            // Both lookups at once: they are independent, and one after the
-            // other doubled the wait for every song.
-            async let exactLookup = try? exactMatch(title: title, artist: artist,
-                                                    album: track.album, duration: track.duration)
-            async let searchLookup = try? bestSearchMatch(title: title, artist: artist,
-                                                          duration: track.duration)
-            let (exact, searched) = await (exactLookup, searchLookup)
+            // Both at once; they're independent.
+            async let exactLookup = Self.attempt {
+                try await self.exactMatch(title: title, artist: artist,
+                                          album: track.album, duration: track.duration)
+            }
+            async let searchLookup = Self.attempt {
+                try await self.bestSearchMatch(title: title, artist: artist, duration: track.duration)
+            }
+            let (exactOutcome, searchOutcome) = await (exactLookup, searchLookup)
+            let exact = exactOutcome.record, searched = searchOutcome.record
+            if exactOutcome.failed || searchOutcome.failed { reached = false }
 
-            // Timed lyrics are the whole point, so look for a synced record in
-            // both places before settling. The exact-match endpoint frequently
-            // holds a plain-only entry for a track that has perfectly good
-            // synced versions in search.
-            if let result = interpret(exact ?? nil, key: track.trackID, requireSynced: true) {
+            // A timed record from either before settling for text: the exact
+            // match is often untimed where search has timed versions.
+            if let result = interpret(exact, key: track.trackID, requireSynced: true) {
                 Diagnostics.log("  lyrics source: exact match, \(artist) (synced)")
-                return result
+                return (result, true)
             }
-            if let result = interpret(searched ?? nil, key: track.trackID, requireSynced: true) {
+            if let result = interpret(searched, key: track.trackID, requireSynced: true) {
                 Diagnostics.log("  lyrics source: search, \(artist) (synced)")
-                return result
+                return (result, true)
             }
-            untimed += [exact ?? nil, searched ?? nil]
+            untimed += [exact, searched]
         }
 
-        // LRCLIB has nothing timed: try NetEase, which often has timing word
-        // by word. Checked before settling for untimed text. The original
-        // title is used as well as the cleaned one, since NetEase's own
-        // titles keep things like "(Remastered)" less often than Spotify's.
+        // Nothing timed on LRCLIB: NetEase, often timed word by word, before
+        // settling for untimed text. With the cleaned title and the original.
         if NetEaseLyrics.isEnabled {
             for name in Array(Set([title, track.name])) {
                 guard let found = await NetEaseLyrics.lyrics(title: name, artist: full, duration: track.duration) else { continue }
@@ -122,7 +131,7 @@ actor LyricsProvider {
                 guard !lines.isEmpty else { continue }
                 writeDisk(track.trackID, contents: found.lrc)
                 Diagnostics.log("  lyrics source: NetEase (\(found.wordTimed ? "word-timed" : "line-timed"))")
-                return .synced(lines)
+                return (.synced(lines), true)
             }
         }
 
@@ -130,11 +139,21 @@ actor LyricsProvider {
         for record in untimed {
             if let result = interpret(record, key: track.trackID, requireSynced: false) {
                 Diagnostics.log("  lyrics source: plain only")
-                return result
+                return (result, true)
             }
         }
-        Diagnostics.log("  lyrics source: none — LRCLIB had nothing for \(title) / \(full)")
-        return .notFound
+        if reached {
+            Diagnostics.log("  lyrics source: none — LRCLIB had nothing for \(title) / \(full)")
+        } else {
+            Diagnostics.log("  lyrics source: none — LRCLIB couldn't be reached")
+        }
+        return (.notFound, reached)
+    }
+
+    /// A lookup's record, and whether it failed to get an answer at all.
+    private static func attempt(_ lookup: @Sendable () async throws -> LyricsRecord?) async
+        -> (record: LyricsRecord?, failed: Bool) {
+        do { return (try await lookup(), false) } catch { return (nil, true) }
     }
 
     private func exactMatch(title: String, artist: String,
@@ -149,7 +168,10 @@ actor LyricsProvider {
         ]
         guard let url = components.url else { return nil }
         let (data, response) = try await URLSession.shared.data(for: request(url))
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        // 404 is "no such song"; anything else but 200 is no answer at all.
+        if status == 404 { return nil }
+        guard status == 200 else { throw URLError(.badServerResponse) }
         return try? JSONDecoder().decode(LyricsRecord.self, from: data)
     }
 
@@ -163,14 +185,12 @@ actor LyricsProvider {
         ]
         guard let url = components.url else { return nil }
         let (data, response) = try await URLSession.shared.data(for: request(url))
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         guard let records = try? JSONDecoder().decode([LyricsRecord].self, from: data) else { return nil }
 
-        // Closest runtime wins. A different master, a live take or an extended
-        // mix carries timings that drift further and further out as the song
-        // goes on, and picking one of those is indistinguishable from the app
-        // losing sync — so how far off the chosen one is gets recorded either
-        // way, and a bad gap is called out rather than left to be guessed at.
+        // Closest runtime wins: another master or a live take drifts further
+        // out as the song goes on, which looks exactly like losing sync — so
+        // the gap is logged either way.
         let best = records
             .filter { ($0.syncedLyrics?.isEmpty == false) || ($0.instrumental == true) }
             .min { lhs, rhs in
@@ -190,8 +210,8 @@ actor LyricsProvider {
         return best ?? records.first
     }
 
-    /// Two or three seconds covers a trimmed intro or a fade; beyond this it is
-    /// a different recording, not the same one measured differently.
+    /// Seconds a runtime may differ and still be the same recording (a trimmed
+    /// intro, a fade).
     private static let durationTolerance: Double = 4
 
     private func request(_ url: URL) -> URLRequest {
@@ -201,8 +221,8 @@ actor LyricsProvider {
         return request
     }
 
-    /// With `requireSynced`, returns nil rather than settling for plain text —
-    /// letting the caller check another source before giving up on timing.
+    /// With `requireSynced`, nil rather than plain text, so the caller can try
+    /// another source for timing first.
     private func interpret(_ record: LyricsRecord?, key: String,
                            requireSynced: Bool) -> LyricsResult? {
         guard let record else { return nil }
@@ -223,9 +243,7 @@ actor LyricsProvider {
 
     // MARK: - Your own timing
     //
-    // Tapped out in the Controls window, and kept apart from the download
-    // cache: "Reload lyrics" clears that cache, and must never take an
-    // evening's tapping with it.
+    // Kept apart from the download cache, which Reload lyrics clears.
 
     private lazy var userDirectory: URL = {
         let root = FileManager.default
@@ -236,8 +254,7 @@ actor LyricsProvider {
     }()
 
     private func userFile(for key: String) -> URL {
-        let safe = key.map { "/:\\".contains($0) ? "_" : String($0) }.joined()
-        return userDirectory.appendingPathComponent("\(safe).lrc")
+        userDirectory.appendingPathComponent(Self.fileName(key))
     }
 
     private func readUser(_ key: String) -> String? {
@@ -275,19 +292,20 @@ actor LyricsProvider {
         try? contents.write(to: file(for: key), atomically: true, encoding: .utf8)
     }
 
-    /// A track with no persistent ID is keyed by its title and artist, and a
-    /// "/" in either would name a folder that doesn't exist — the lyrics
-    /// silently never cached. Such keys are made safe; ordinary IDs, which
-    /// are letters and digits, keep the name they already have on disk.
     private func file(for key: String) -> URL {
-        let safe = key.map { "/:\\".contains($0) ? "_" : String($0) }.joined()
-        return cacheDirectory.appendingPathComponent("\(safe).lrc")
+        cacheDirectory.appendingPathComponent(Self.fileName(key))
+    }
+
+    /// Keys that aren't plain IDs — a local file's URI, a title and artist —
+    /// can hold "/" or ":". Ordinary IDs keep the names already on disk.
+    private static func fileName(_ key: String) -> String {
+        key.map { "/:\\".contains($0) ? "_" : String($0) }.joined() + ".lrc"
     }
 
     // MARK: - Title cleanup
     //
-    // Spotify titles carry a lot of baggage that LRCLIB doesn't index:
-    // "Song - 2011 Remaster", "Song (feat. Someone)", "Song - Radio Edit".
+    // Titles carry versions and credits LRCLIB doesn't index: "Song - 2011
+    // Remaster", "Song (feat. Someone)", "Song - Radio Edit".
 
     static func normalizeTitle(_ raw: String) -> String {
         var title = raw
@@ -298,9 +316,8 @@ actor LyricsProvider {
             title = String(title[..<dash.lowerBound])
         }
 
-        // "(Remastered)", "(2015 Remaster)", "(Live at Wembley)". Only groups
-        // that actually look like version noise — parentheses are part of plenty
-        // of real titles, like "(Don't Fear) The Reaper".
+        // "(Remastered)", "(Live at Wembley)" — but not "(Don't Fear) The
+        // Reaper": only groups that read as version noise.
         title = strippingNoisyGroups(title, open: "(", close: ")")
         title = strippingNoisyGroups(title, open: "[", close: "]")
 
@@ -355,10 +372,11 @@ actor LyricsProvider {
     }
 
     static func normalizeArtist(_ raw: String) -> String {
-        // Spotify joins collaborators; LRCLIB indexes on the primary artist.
-        for separator in ["; ", " & ", ", ", " feat. ", " ft. "] where raw.contains(separator) {
-            return raw.components(separatedBy: separator)[0].trimmingCharacters(in: .whitespaces)
-        }
-        return raw.trimmingCharacters(in: .whitespaces)
+        // LRCLIB indexes the primary artist: everything before the first
+        // separator in the name.
+        let cut = ["; ", " & ", ", ", " feat. ", " ft. "]
+            .compactMap { raw.range(of: $0)?.lowerBound }
+            .min()
+        return String(cut.map { raw[..<$0] } ?? raw[...]).trimmingCharacters(in: .whitespaces)
     }
 }

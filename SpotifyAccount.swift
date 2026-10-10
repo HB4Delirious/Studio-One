@@ -3,34 +3,17 @@ import CryptoKit
 import Foundation
 import Network
 
-/// Signing in to Spotify, for the one thing the desktop app's scripting cannot
-/// give: your library.
+/// Signing in to Spotify for the user's library — playlists, Liked Songs and
+/// the queue — which the desktop app's scripting doesn't have. (Search needs
+/// no sign-in; see `SpotifyAPI`.)
 ///
-/// Spotify's AppleScript dictionary has the current track and the transport and
-/// nothing else — no playlists, no saved songs, no queue. The Web API has all
-/// three, but only on behalf of a signed-in user. Search does not need this and
-/// never did; it still runs on the client-credentials token in `SpotifyAPI`.
+/// Authorization Code with PKCE: the login is on Spotify's page in the
+/// browser, no client secret is needed, and the refresh token lives in the
+/// login keychain until Sign out. The redirect comes back to a one-shot
+/// listener on 127.0.0.1:8725, since Spotify no longer accepts `localhost`.
 ///
-/// The flow is Authorization Code with PKCE, which is what Spotify asks desktop
-/// apps to use:
-///
-/// - The login happens on Spotify's own page in your browser. Studio One never
-///   sees your password.
-/// - PKCE needs no client secret, only the client ID already in the keychain.
-/// - What comes back is a refresh token, kept in the login keychain beside the
-///   client ID. It can be revoked from Spotify's account page at any time, and
-///   Sign out deletes it.
-///
-/// The redirect has to go to a fixed address registered in the Spotify
-/// developer dashboard. Spotify stopped accepting `localhost` in November 2025
-/// but still accepts the loopback IP, so a one-shot listener on 127.0.0.1 takes
-/// the redirect. Port 8725 sits just above the request line's 8710–8719.
-///
-/// **What Spotify allows (rules applied to all development-mode apps from
-/// March 2026):** your playlists and saved songs can be listed, but a playlist's
-/// tracks are only returned for playlists you own or collaborate on — anything
-/// you merely follow answers 403. Those are still listed, and say why they
-/// will not open.
+/// Development-mode apps can list any playlist, but only open ones the user
+/// owns or collaborates on; followed ones answer 403, and say so.
 actor SpotifyAccount {
 
     static let shared = SpotifyAccount()
@@ -47,9 +30,8 @@ actor SpotifyAccount {
         "user-read-playback-state",
     ]
 
-    /// Not a secret: only whether and as whom. The token itself is in the
-    /// keychain. Kept here so `canBrowseLibrary` can answer synchronously
-    /// without a keychain read on every redraw.
+    /// Whether, and as whom — not a secret, and readable without a keychain
+    /// read on every redraw. The token is in the keychain.
     static let signedInNameKey = "spotifySignedInName"
 
     nonisolated static var isSignedIn: Bool {
@@ -60,9 +42,8 @@ actor SpotifyAccount {
     private var expiresAt: Date = .distantPast
     private var userID: String?
 
-    /// Playlist position → what is needed to open it again. `LibraryPlaylist`
-    /// is addressed by an integer because Music's playlists have no stable ID;
-    /// Spotify's do, so they are kept here against that integer.
+    /// Playlist position → what's needed to open it again. `LibraryPlaylist`
+    /// is keyed by position; Spotify's own IDs are kept here against it.
     private var playlistRefs: [Int: PlaylistRef] = [:]
 
     struct PlaylistRef {
@@ -142,6 +123,7 @@ actor SpotifyAccount {
         let name: String
         let artist: String
         let duration: Double
+        var album: String? = nil
     }
 
     /// Liked Songs first, then every playlist in your Spotify sidebar.
@@ -162,7 +144,7 @@ actor SpotifyAccount {
             let index = result.count + 1
             refs[index] = PlaylistRef(id: id, uri: uri, imageURL: image.flatMap(URL.init(string:)),
                                       readable: owner == me || collaborative)
-            // Spotify allows a playlist with an empty name; it showed as a blank row.
+            // Spotify allows an empty name.
             let name = (entry["name"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
             result.append((index, name.isEmpty ? "Untitled" : name))
         }
@@ -178,15 +160,13 @@ actor SpotifyAccount {
 
         let entries: [[String: Any]]
         if let id = ref.id {
-            // `item` replaced `track` in the 2026 API; older responses carry
-            // only `track`. Local files and podcast episodes cannot be started
-            // by URI from a script, so they are left out.
+            // `item` in the 2026 API, `track` before. Local files and
+            // episodes can't be started by URI from a script.
             entries = try await paged("https://api.spotify.com/v1/playlists/\(id)/items?limit=50",
                                       maxPages: 20)
                 .compactMap { ($0["item"] ?? $0["track"]) as? [String: Any] }
         } else {
-            // Liked Songs, newest first. Capped at 500: a large collection
-            // would otherwise be dozens of round trips before anything shows.
+            // Liked Songs, newest first, capped at 500 to keep it quick.
             entries = try await paged("https://api.spotify.com/v1/me/tracks?limit=50", maxPages: 10)
                 .compactMap { $0["track"] as? [String: Any] }
         }
@@ -205,6 +185,13 @@ actor SpotifyAccount {
         return [current] + queued.prefix(limit)
     }
 
+    /// The playlist or album playing, as a URI: what the next song is played
+    /// within, so playback carries on from it.
+    func playingContext() async throws -> String? {
+        let body = try await getJSON("https://api.spotify.com/v1/me/player", allowEmpty: true)
+        return (body["context"] as? [String: Any])?["uri"] as? String
+    }
+
     private static func track(from object: [String: Any]) -> Track? {
         guard (object["type"] as? String ?? "track") == "track",
               object["is_local"] as? Bool != true,
@@ -212,7 +199,8 @@ actor SpotifyAccount {
               let name = object["name"] as? String else { return nil }
         let artists = (object["artists"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
         return Track(uri: uri, name: name, artist: artists.joined(separator: ", "),
-                     duration: Double(object["duration_ms"] as? Int ?? 0) / 1000)
+                     duration: Double(object["duration_ms"] as? Int ?? 0) / 1000,
+                     album: (object["album"] as? [String: Any])?["name"] as? String)
     }
 
     // MARK: - Requests
@@ -240,7 +228,10 @@ actor SpotifyAccount {
     }
 
     private func getJSON(_ url: String, allowEmpty: Bool = false) async throws -> [String: Any] {
-        var request = URLRequest(url: URL(string: url)!)
+        // `url` is sometimes Spotify's own "next page" link; one that doesn't
+        // parse is an error, not a crash.
+        guard let target = URL(string: url) else { throw URLError(.badURL) }
+        var request = URLRequest(url: target)
         request.setValue("Bearer \(try await userToken())", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -263,14 +254,10 @@ actor SpotifyAccount {
 
     // MARK: - Tokens
 
-    /// The refresh in flight, shared by everyone who needs a token meanwhile.
-    ///
-    /// An actor still interleaves at every `await`. When the hourly token ran
-    /// out, the library's burst of requests — playlists, a cover per card —
-    /// each saw it expired and each refreshed with the same refresh token.
-    /// Spotify may rotate that token on use; then the first refresh wins, the
-    /// rest come back 400, and a 400 here means "revoked": signed out an hour
-    /// into the evening. One refresh, awaited by all, can't race itself.
+    /// The refresh in flight, awaited by every request that needs a token
+    /// meanwhile. The actor interleaves at each `await`, so a burst of requests
+    /// could otherwise each refresh with the same token — and Spotify may
+    /// rotate it on use, making every refresh after the first look revoked.
     private var refreshing: Task<Void, Error>?
 
     private func userToken() async throws -> String {
@@ -298,16 +285,14 @@ actor SpotifyAccount {
                                 "refresh_token": refresh,
                                 "client_id": clientID])
         } catch SpotifyAccountError.http(400) {
-            // Revoked from Spotify's side, or expired. Signing in again is the
-            // only way back, so say so rather than failing every call.
+            // Revoked or expired: only signing in again will do.
             signOut()
             throw SpotifyAccountError.signedOut
         }
     }
 
-    /// Both the first sign-in and every refresh land here. Spotify may rotate
-    /// the refresh token on refresh; when it does, the old one stops working, so
-    /// the new one is stored straight away.
+    /// The first sign-in and every refresh. A rotated refresh token replaces
+    /// the old one at once, since the old one stops working.
     private func exchange(_ form: [String: String]) async throws {
         var request = URLRequest(url: URL(string: "https://accounts.spotify.com/api/token")!)
         request.httpMethod = "POST"
@@ -392,10 +377,8 @@ enum SpotifyAccountError: LocalizedError, Equatable {
 
 /// Takes exactly one browser redirect on 127.0.0.1 and hands back its query.
 ///
-/// Bound to the loopback address only, so nothing else on the network can reach
-/// it, and torn down as soon as the redirect arrives or the wait gives up.
-/// Requests for anything other than /callback — a browser asks for
-/// /favicon.ico unprompted — get a 404 and the wait continues.
+/// Loopback only, and torn down once the redirect arrives or the wait gives
+/// up. Anything but /callback (a browser asks for /favicon.ico) gets a 404.
 final class LoopbackCallback: @unchecked Sendable {
 
     private let listener: NWListener

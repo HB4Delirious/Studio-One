@@ -3,15 +3,9 @@ import Network
 
 /// Opens a listener on the first port in a range that actually binds.
 ///
-/// `NWListener` never refuses a busy port when it is created — it is handed
-/// out, starts, and only then fails with "Address already in use". The servers
-/// here used to walk their port ranges by catching that creation error, which
-/// never comes, so they always took the first port, published it, and died a
-/// moment later: a request QR code that leads nowhere, or a Stream Deck told
-/// to knock on a door nobody answers. Two copies of the app running at once —
-/// an Xcode build beside the installed one — is enough to cause it.
-///
-/// This waits for each attempt to report ready or failed before moving on.
+/// `NWListener` doesn't refuse a busy port when created: it starts, then
+/// fails with "Address already in use". So each attempt is awaited until it
+/// reports ready or failed before the next port is tried.
 enum PortListener {
 
     /// `configure` sets the connection handler; it runs before the listener

@@ -4,9 +4,8 @@ import SwiftUI
 /// Backs the browser: playlists, the tracks of whichever one is open, what's
 /// coming up, and cover art.
 ///
-/// Everything here is fetched on demand and cached. Apple Events are not cheap
-/// — the fastest call in this file is about 0.15s — so nothing is re-fetched on
-/// a redraw, and nothing is fetched before something wants to show it.
+/// Everything is fetched when first shown and then kept: the quickest Apple
+/// Event here takes about 0.15 s.
 @MainActor
 final class LibraryModel: ObservableObject {
 
@@ -17,16 +16,24 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var failure: String?
     @Published var selected: LibraryPlaylist?
 
+    /// Songs in the guests' requests playlist, for its badge.
+    @Published private(set) var requestCount: Int?
+
+    /// The guests' requests playlist, when the player has one (Apple Music).
+    var requestsPlaylist: LibraryPlaylist? {
+        guard model?.musicSource == .appleMusic else { return nil }
+        return playlists.first { $0.name == AppleMusicController.requestsPlaylist }
+    }
+
     /// Playlist index → cover. Kept as NSImage so a redraw doesn't re-decode.
     @Published private(set) var covers: [Int: NSImage] = [:]
     private var coversInFlight: Set<Int> = []
 
-    /// Bumped whenever the library underneath changes — another source, a
-    /// reload. A cover still loading from before must not land on whatever
-    /// playlist now has its number.
+    /// Bumped when the library underneath changes (another source, a reload),
+    /// so a cover still loading can't land on whichever playlist now has its
+    /// number.
     private var generation = 0
-    /// The generation a playlist load is running for. A load for an older
-    /// generation doesn't block a new one, and its result is dropped.
+    /// The generation a playlist load is for; an older one's result is dropped.
     private var loadingFor: Int?
 
     /// Search spans both: what the host already owns and can play now, and the
@@ -75,12 +82,12 @@ final class LibraryModel: ObservableObject {
             playlists = loaded
             failure = nil
             Diagnostics.log("library: \(playlists.count) playlists")
+            await refreshRequestCount()
         } catch {
             guard generation == asked else { return }
             failure = error.localizedDescription
-            // Not an error worth the word when the player simply isn't open
-            // yet: the library loads by itself the moment it is.
-            if case SpotifyControllerError.notRunning = error {
+            // Not an error while the player isn't open: it loads once it is.
+            if case PlayerError.notRunning = error {
                 Diagnostics.log("library: waiting for the player to open")
             } else {
                 Diagnostics.log("ERROR library playlists: \(error.localizedDescription)")
@@ -88,8 +95,7 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    /// Throws away what was loaded and fetches again — after signing in to
-    /// Spotify, when the library goes from nothing to everything.
+    /// Starts over — after signing in or out of Spotify.
     func reload() async {
         playlists = []
         tracks = []
@@ -113,13 +119,13 @@ final class LibraryModel: ObservableObject {
         defer { loading = false }
         do {
             let loaded = try await browser.tracks(in: playlist)
-            // Clicked something else meanwhile: that one's list is on its way,
-            // and this one must not land under its name.
-            guard selected == playlist else { return }
+            // Another playlist was opened meanwhile. Matched as the same
+            // playlist, not the same value: a refresh may have moved it.
+            guard let selected, Self.same(selected, playlist) else { return }
             tracks = loaded
             Diagnostics.log("library: \(tracks.count) tracks in \(playlist.name)")
         } catch {
-            guard selected == playlist else { return }
+            guard let selected, Self.same(selected, playlist) else { return }
             failure = error.localizedDescription
         }
     }
@@ -129,8 +135,7 @@ final class LibraryModel: ObservableObject {
             upNext = nil
             return
         }
-        // Forty is more than fits on screen and keeps the payload small; a
-        // library playlist can hold thousands of tracks.
+        // More than fits on screen; the playlist may hold thousands.
         upNext = try? await browser.upNext(limit: 40)
     }
 
@@ -146,34 +151,30 @@ final class LibraryModel: ObservableObject {
             return
         }
         searching = true
-        searchTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 280_000_000)
-            guard !Task.isCancelled, let self else { return }
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(280))
+            guard !Task.isCancelled else { return }
 
-            let browser = await MainActor.run { self.model?.browser }
+            let browser = model?.browser
             async let mine: [LibraryTrack] = {
                 guard let browser else { return [] }
                 return (try? await browser.searchLibrary(wanted)) ?? []
             }()
-            // The iTunes catalogue is Apple Music's. On Spotify, `searchLibrary`
-            // already searches the whole of Spotify, and those results play.
-            let spotify = await MainActor.run { self.isSpotify }
-            async let theirs: [CatalogTrack] = spotify ? [] : CatalogSearch.shared.search(wanted)
+            // On Spotify, `searchLibrary` already covers all of Spotify, and
+            // those results play; the iTunes catalogue is Apple Music's.
+            async let theirs: [CatalogTrack] = isSpotify ? [] : CatalogSearch.shared.search(wanted)
             let (owned, catalogue) = await (mine, theirs)
             guard !Task.isCancelled else { return }
 
-            // Anything already owned is shown in the first list; repeating it
-            // under "Apple Music" would just look like a duplicate.
+            // Songs already owned show once, in the library list.
             let have = Set(owned.map { "\($0.name.lowercased())|\($0.artist.lowercased())" })
             let rest = catalogue.filter {
                 !have.contains("\($0.name.lowercased())|\($0.artist.lowercased())")
             }
             Diagnostics.log("search \"\(wanted)\": library \(owned.count), catalogue \(catalogue.count) → \(rest.count) after dedupe")
-            await MainActor.run {
-                self.libraryHits = owned
-                self.catalogHits = rest
-                self.searching = false
-            }
+            libraryHits = owned
+            catalogHits = rest
+            searching = false
         }
     }
 
@@ -185,26 +186,13 @@ final class LibraryModel: ObservableObject {
         searching = false
     }
 
-    /// Open a catalogue track in Music and start it as soon as it can be
-    /// started.
+    /// Opens a catalogue track in Music and starts it once it's in the library.
     ///
-    /// Nothing here can play it directly. Music refuses a catalogue track from
-    /// every angle its scripting offers: `open location` then `play` leaves the
-    /// player paused on a placeholder named after the album id, `playpause` and
-    /// `play current track` do the same, `download` on that placeholder fails
-    /// -4, `duplicate` cannot copy it into the library, and the "iTunes Store"
-    /// source reports no tracks at all. Music will not even produce the
-    /// placeholder reliably — the same script made a URL track one minute and
-    /// none the next. The other routes out are worse: MusicKit's catalogue
-    /// requests need a Team ID with a MusicKit service behind them, which an
-    /// ad-hoc signed build has no way to hold, and the streams are FairPlay, so
-    /// nothing outside Music can decode them.
-    ///
-    /// What is left is the plus button, and it is one click. So the page is
-    /// opened for that click and the library is watched; the moment the song
-    /// lands, it starts. It is also the outcome worth having — once added it is
-    /// a library track like any other, so it can be queued, reordered,
-    /// requested and lyric-synced, none of which a stream could be.
+    /// Music's scripting can't play a catalogue track by any route (it stalls
+    /// on a placeholder), and MusicKit needs a developer Team ID. So the song's
+    /// page is opened for its one-click + button, and the library is watched
+    /// until it arrives — after which it can be queued and requested like any
+    /// other.
     func open(_ track: CatalogTrack) {
         guard let url = track.openURL else { return }
         NSWorkspace.shared.open(url)
@@ -217,53 +205,38 @@ final class LibraryModel: ObservableObject {
         awaiting = nil
     }
 
-    /// Polls rather than waits on a notification: Music posts nothing when a
-    /// track is added to the library. Every 1.5s for two minutes is 80 searches
-    /// at 0.18s each, which is cheap next to how long it takes someone to find
-    /// the button.
+    /// Polled, since Music announces nothing when a track is added: a search
+    /// every 1.5 s for two minutes.
     private func watchForArrival(of track: CatalogTrack) {
         awaitTask?.cancel()
         awaiting = track
-        awaitTask = Task { [weak self] in
+        awaitTask = Task {
+            defer { if awaiting == track { awaiting = nil; awaitTask = nil } }
             let deadline = Date().addingTimeInterval(120)
             while Date() < deadline {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                guard !Task.isCancelled, let self else { return }
-                guard let browser = await MainActor.run(body: { self.model?.browser }) else { break }
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled, let browser = model?.browser else { return }
                 let hits = (try? await browser.searchLibrary(Self.searchTerm(for: track))) ?? []
                 guard !Task.isCancelled else { return }
-                if let match = hits.first(where: { Self.isSame($0, as: track) }),
-                   let id = match.databaseID {
-                    try? await browser.playNow(databaseID: id)
+                if let match = hits.first(where: { Self.isSame($0, as: track) }) {
+                    try? await browser.play(match)
                     Diagnostics.log("catalogue: \(track.name) added to the library, started it")
-                    await MainActor.run {
-                        self.awaiting = nil
-                        self.awaitTask = nil
-                    }
                     return
                 }
             }
             Diagnostics.log("catalogue: gave up waiting for \(track.name)")
-            await MainActor.run {
-                self?.awaiting = nil
-                self?.awaitTask = nil
-            }
         }
     }
 
-    /// The store's title carries credits the library copy may not: the store
-    /// calls it "Monsters (feat. Demi Lovato & blackbear)" where the library has
-    /// "Monsters (feat. blackbear)", and searching the library for the longer
-    /// string finds nothing at all. Searching for the title alone found it, and
-    /// `isSame` still has the artist and the running time to judge on.
+    /// The title without its bracketed credits, which the store and the
+    /// library copy often disagree on.
     private static func searchTerm(for track: CatalogTrack) -> String {
         let stripped = outsideBrackets(track.name).trimmingCharacters(in: .whitespaces)
         return stripped.count >= 2 ? stripped : track.name
     }
 
-    /// Music's copy of a track is rarely character-identical to the store's —
-    /// "(feat. …)" comes and goes, and so does punctuation — so the comparison
-    /// is on the bare title plus a shared artist word plus the running time.
+    /// Library and store copies rarely match character for character, so this
+    /// compares the bare title, a shared artist word and the running time.
     private static func isSame(_ owned: LibraryTrack, as wanted: CatalogTrack) -> Bool {
         guard bare(owned.name) == bare(wanted.name) else { return false }
         if wanted.duration > 0, owned.duration > 0,
@@ -294,40 +267,64 @@ final class LibraryModel: ObservableObject {
             .filter { $0.count > 1 }
     }
 
-    /// Search hits carry a database ID rather than a position in a playlist,
-    /// so they start through `playNow` instead of the playlist path.
-    func playHit(_ track: LibraryTrack) {
-        if let id = track.databaseID {
-            model?.performOnBrowser { try await $0.playNow(databaseID: id) }
-        } else {
-            // Spotify results carry a URI instead.
-            model?.performOnBrowser { try await $0.play(track) }
+    /// One Apple Event, after anything that may have changed it: a request,
+    /// a song change, the playlists loading.
+    func refreshRequestCount() async {
+        guard let music = model?.browser as? AppleMusicController, model?.musicSource == .appleMusic else {
+            if requestCount != nil { requestCount = nil }
+            return
         }
+        let count = await music.requestCount()
+        // Made since the list was read — by the first request, or Queue
+        // Again: read the list again so it shows.
+        if count != nil, requestsPlaylist == nil { await refreshPlaylists() }
+        if requestCount != count { requestCount = count }
+    }
+
+    /// The playlists read again, keeping what's open, for one made since
+    /// launch. Covers are keyed by position, which a new playlist shifts, so
+    /// each is carried to its playlist's new place.
+    private func refreshPlaylists() async {
+        guard let browser = model?.browser, browser.canBrowseLibrary, loadingFor == nil else { return }
+        let asked = generation
+        guard let loaded = try? await browser.playlists(), generation == asked, loaded != playlists else { return }
+        var moved: [Int: NSImage] = [:]
+        for playlist in loaded {
+            if let old = playlists.first(where: { Self.same($0, playlist) }), let cover = covers[old.index] {
+                moved[playlist.index] = cover
+            }
+        }
+        generation += 1
+        playlists = loaded
+        covers = moved
+        coversInFlight = []
+        if let open = selected { selected = loaded.first { Self.same($0, open) } }
+    }
+
+    /// The same playlist, wherever it now sits: by persistent ID where the
+    /// player has one (Apple Music); without one, only the very same entry —
+    /// two of Spotify's can share a name.
+    private static func same(_ a: LibraryPlaylist, _ b: LibraryPlaylist) -> Bool {
+        a.persistentID != nil ? a.persistentID == b.persistentID : a == b
     }
 
     func play(_ track: LibraryTrack) {
-        model?.performOnBrowser { try await $0.play(track) }
+        model?.playChosen(track)
     }
 
-    /// Cover for a playlist, taken from its first track. Loaded once, and only
-    /// when a card actually appears.
+    /// Loaded once, and only when a playlist's card appears.
     func cover(for playlist: LibraryPlaylist) {
         guard covers[playlist.index] == nil,
               !coversInFlight.contains(playlist.index),
               let browser = model?.browser, browser.canBrowseLibrary else { return }
         coversInFlight.insert(playlist.index)
         let asked = generation
-        let probe = LibraryTrack(id: "cover-\(playlist.index)", name: "", artist: "",
-                                 duration: 0, playlistIndex: playlist.index,
-                                 trackIndex: 1, uri: nil, playlistID: playlist.persistentID)
-        Task { [weak self] in
-            let data = await browser.artwork(for: probe)
-            await MainActor.run {
-                guard let self, self.generation == asked else { return }
-                self.coversInFlight.remove(playlist.index)
-                if let data, let image = NSImage(data: data) {
-                    self.covers[playlist.index] = image
-                }
+        Task {
+            let data = await browser.cover(of: playlist)
+            guard generation == asked else { return }
+            coversInFlight.remove(playlist.index)
+            if let data, let image = NSImage(data: data) {
+                covers[playlist.index] = image
             }
         }
     }

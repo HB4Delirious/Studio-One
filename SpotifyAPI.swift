@@ -27,15 +27,9 @@ enum SpotifyAPIError: LocalizedError {
     }
 }
 
-/// Talks to the Spotify Web API using the client-credentials flow.
-///
-/// Search hits the public catalog, so no user login is needed — the app never
-/// touches your account. Playback is handled entirely by the Spotify desktop app
-/// via Apple Events, which is why there's no OAuth dance here.
-///
-/// If you later want your own playlists or library, swap this for Authorization
-/// Code + PKCE with a `http://127.0.0.1:PORT/callback` redirect. (Spotify rejects
-/// the literal hostname `localhost` — it has to be the loopback IP.)
+/// Spotify's Web API with the app's own client credentials: catalogue search,
+/// which needs no sign-in. Anything of the user's own goes through
+/// `SpotifyAccount`.
 actor SpotifyAPI {
 
     static let shared = SpotifyAPI()
@@ -45,10 +39,7 @@ actor SpotifyAPI {
 
     // MARK: - Search
 
-    /// Spotify documents `limit` as accepting 0–50, but the search endpoint
-    /// rejects anything above 10 with HTTP 400 "Invalid limit". Verified against
-    /// the live API: 10 succeeds, 11 and up fail. Clamped below so a caller
-    /// passing the documented range doesn't silently break search.
+    /// Documented as 50, but search answers 400 "Invalid limit" above 10.
     static let maxSearchLimit = 10
 
     func search(_ query: String, limit: Int = maxSearchLimit) async throws -> [SearchResult] {
@@ -65,8 +56,7 @@ actor SpotifyAPI {
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 12
 
-        // Twice at most: a token that went stale mid-flight gets one fresh
-        // try, rather than failing the search and making you type it again.
+        // A token that went stale in flight gets one fresh try.
         var data = Data()
         var status = 0
         for attempt in 0..<2 {
@@ -95,12 +85,8 @@ actor SpotifyAPI {
 
     // MARK: - Token
 
-    /// Fetch the token ahead of time, ignoring failure.
-    ///
-    /// The first call reads credentials from the keychain and does an OAuth
-    /// round trip, which measured about fifty seconds cold — long enough that
-    /// the first song of a session got no key or tempo at all. Doing it in the
-    /// background just after launch means the first lookup finds it ready.
+    /// Fetches the token early, ignoring failure: cold, the keychain read and
+    /// OAuth round trip can take long enough to miss the first song's lookup.
     func warm() async { _ = try? await token() }
 
     private func token() async throws -> String {

@@ -2,21 +2,17 @@ import SwiftUI
 
 /// Scattered particles behind the lyrics.
 ///
-/// Driven by the lyric clock, not by audio — Apple Events never expose samples,
-/// so there is no spectrum to analyse. Each particle is born on a beat somewhere
-/// on the frame, grows, and fades out again, so the field is never the same twice
-/// and nothing anchors it to the centre. When there is no beat to drive it, it
-/// fades to an empty backdrop rather than idling. Kept dim on purpose: the lit
-/// word should stay the brightest thing on screen.
+/// Driven by the lyric clock — the players expose no audio to analyse. Each
+/// particle is born on a beat somewhere on the frame, grows and fades, so the
+/// field never repeats. With nothing to drive it, it fades out. Kept dim, so
+/// the lit word stays the brightest thing on screen.
 struct AmbientBackground: View {
     @EnvironmentObject private var model: KaraokeModel
     @AppStorage(FrameRate.defaultsKey) private var targetFPS: Double = FrameRate.minimum
 
     var body: some View {
-        // Capped at 30fps regardless of the lyric setting. These are soft,
-        // slow-moving shapes over the whole window — the most fill-rate-hungry
-        // thing on screen — and redrawing them at 120 buys nothing the eye can
-        // see. The lyrics and the sweep still run at the full rate.
+        // 30 fps whatever the lyric rate: soft, slow shapes over the whole
+        // window cost the most to draw and gain nothing visible from more.
         TimelineView(.animation(minimumInterval: max(1.0 / 30.0, FrameRate.interval(for: targetFPS)),
                                 paused: !model.isPlaying)) { timeline in
             let now = timeline.date.timeIntervalSinceReferenceDate
@@ -24,8 +20,7 @@ struct AmbientBackground: View {
             let index = model.activeIndex(at: position)
             let line = index.flatMap { model.lines.indices.contains($0) ? model.lines[$0] : nil }
 
-            // Take the cover's colours when we have them, the house palette when
-            // we don't — a track with no artwork shouldn't lose its background.
+            // The cover's colours, or the house palette without one.
             let colours: [Color] = model.palette.isEmpty
                 ? [Theme.sung, Theme.cue, Theme.violet]
                 : model.palette.map(\.color)
@@ -35,16 +30,14 @@ struct AmbientBackground: View {
             let hasBeat = (tempo.map { $0 >= 40 && $0 <= 250 }) ?? false
             let pulse = Self.pulse(at: position, line: line, bpm: tempo, offset: offset)
 
-            // Particles are born on beats. With a tempo that's the real grid;
-            // without one there is nothing to be on time with, so they ride the
-            // wall clock and are gated by `energy` instead.
+            // Born on the beat grid; with no tempo, on the wall clock, gated
+            // by `energy`.
             let beats = hasBeat
                 ? (position - offset) * tempo! / 60
                 : now * 2
 
-            // Nothing to show when nothing is driving it. With a tempo the field
-            // runs continuously; without one it only appears on vocal onsets and
-            // fades away between them. Stopped playback empties it entirely.
+            // With a tempo it runs continuously; without, only on vocal
+            // onsets. Stopped, it's empty.
             let energy = !model.isPlaying ? 0 : (hasBeat ? 1 : pulse)
 
             Canvas(rendersAsynchronously: true) { context, size in
@@ -52,8 +45,7 @@ struct AmbientBackground: View {
                             size: size,
                             time: now,
                             pulse: pulse,
-                            // Faster songs spin faster, so the whole field
-                            // reads as belonging to the track's energy.
+                            // Faster songs spin faster.
                             rate: Self.driftRate(for: tempo),
                             beats: beats,
                             energy: energy,
@@ -66,18 +58,13 @@ struct AmbientBackground: View {
         }
     }
 
-    /// A pulse per beat when the tempo is known, falling back to word onsets.
-    ///
-    /// The grid's phase is estimated once per track from where all the lyric
-    /// lines fall (see `LRCParser.beatOffset`), so it stays continuous instead
-    /// of resetting at every line.
+    /// A pulse per beat when the tempo is known, else on word onsets. The
+    /// grid's phase is estimated once per song (`LRCParser.beatOffset`).
     private static func pulse(at position: Double, line: LyricLine?,
                               bpm: Double?, offset: Double) -> Double {
         if let bpm, bpm >= 40, bpm <= 250 {
             let beat = 60.0 / bpm
-            // One continuous grid for the whole song. Anchoring to the current
-            // line meant the phase reset on every line, and lyric lines often
-            // begin off the beat — which is precisely what read as offbeat.
+            // One grid for the whole song: lines often start off the beat.
             var phase = (position - offset).truncatingRemainder(dividingBy: beat)
             if phase < 0 { phase += beat }
             return exp(-3.4 * phase / beat)     // decays across one beat
@@ -101,11 +88,8 @@ struct AmbientBackground: View {
         return 0.6 + 0.4 * (bpm / 120)
     }
 
-    /// Particles are laid out one per cell of a coarse grid, jittered well past
-    /// the cell edges. Purely random placement clumps — half the frame ends up
-    /// crowded and the other half empty — and that reads as a bug rather than as
-    /// chance. This keeps the coverage even while every position still looks
-    /// arbitrary.
+    /// One particle per cell of a coarse grid, jittered past the cell edges:
+    /// even coverage that still looks random, where random placement clumps.
     private static let gridX = 6
     private static let gridY = 4
     private static let particleCount = gridX * gridY
@@ -183,10 +167,8 @@ struct AmbientBackground: View {
                      colour: colour, alpha: alpha, seed: r2)
         }
 
-        // The lyrics sit across the middle, so that band is pulled back down.
-        // A full-height gradient rather than a rectangle: any edge would show as
-        // a hard line now that the field around it can be near-black. Measured:
-        // this keeps white text above 5:1 there in the worst case.
+        // Dimmed across the middle where the lyrics sit — a gradient, since
+        // any edge would show — keeping white text above 5:1 contrast.
         context.blendMode = .normal
         context.fill(
             Path(CGRect(origin: .zero, size: size)),

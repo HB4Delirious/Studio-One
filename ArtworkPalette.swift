@@ -23,7 +23,7 @@ final class PaletteProvider {
 
     private var cache: [String: [PaletteColor]] = [:]
 
-    func palette(for track: SpotifyTrack) async -> [PaletteColor] {
+    func palette(for track: PlayerTrack) async -> [PaletteColor] {
         let key = track.trackID
         if let hit = cache[key] { return hit }
         guard let url = track.artworkURL else { return [] }
@@ -167,16 +167,4 @@ extension Array where Element == PaletteColor {
 
     /// A second colour for gradients; repeats the accent on single-hue covers.
     var secondary: Color { count > 1 ? self[1].color : accent }
-
-    /// How hard the accent may tint a panel, scaled down for bright covers.
-    ///
-    /// A flat opacity looks fine on a deep blue sleeve and destroys the dim
-    /// secondary text on a yellow one — measured, a bright accent at 0.30 drops
-    /// `Theme.upcoming` to 1.5:1, against 3.5:1 on the untinted panel. Scaling by
-    /// luminance holds every cover near 3:1 instead.
-    var tintStrength: Double {
-        guard let base = first else { return 0 }
-        let luminance = 0.2126 * base.red + 0.7152 * base.green + 0.0722 * base.blue
-        return 0.20 * (1 - Swift.min(0.8, luminance))
-    }
 }

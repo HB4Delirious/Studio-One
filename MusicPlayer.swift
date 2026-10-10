@@ -21,59 +21,93 @@ enum MusicSource: String, CaseIterable, Identifiable {
         }
     }
 
-    var isInstalled: Bool {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
-    }
-
     var isRunning: Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
 
     static let defaultsKey = "musicSource"
 
-    /// Whichever source is driving right now. Both controllers share one error
-    /// type, and an error is only ever shown for the source in use, so this is
-    /// what lets those messages name the right app.
+    /// The source in use, for naming it in `PlayerError`'s messages.
     static var current: MusicSource {
         UserDefaults.standard.string(forKey: defaultsKey).flatMap(MusicSource.init(rawValue:)) ?? .spotify
     }
 }
 
-/// What the app needs from a player, whichever one is driving.
-///
-/// Both implementations talk over Apple Events — the same mechanism the handoff
-/// notes chose for Spotify, and the reason Apple Music slots in without a new
-/// playback architecture.
+// MARK: - What a player reports
+
+struct PlayerTrack: Equatable {
+    /// "spotify:track:…", "spotify:local:…" or "am:<persistent ID>".
+    var uri: String
+    var name: String
+    var artist: String
+    var album: String
+    var duration: Double     // seconds
+    var artworkURL: URL?
+
+    /// What everything per song is saved under — sync trim, key, song
+    /// settings, cached lyrics and analysis. The URI's last part for Spotify
+    /// tracks and Apple Music; all of it for a local file, whose URI ends in
+    /// its length in seconds and so isn't unique.
+    var trackID: String {
+        if uri.hasPrefix("spotify:local:") { return String(uri.dropFirst("spotify:".count)) }
+        return uri.components(separatedBy: ":").last ?? uri
+    }
+}
+
+enum PlaybackState: String {
+    case playing, paused, stopped
+}
+
+struct PlayerSnapshot {
+    var state: PlaybackState
+    var track: PlayerTrack?
+    var position: Double
+    /// `CACurrentMediaTime()` at the midpoint of the Apple Event round trip.
+    var sampledAt: CFTimeInterval
+}
+
+enum PlayerError: LocalizedError {
+    case notRunning
+    case notAuthorized
+    case notResponding
+    case scriptFailed(String)
+    case malformedResponse
+
+    var errorDescription: String? {
+        let player = MusicSource.current.displayName
+        switch self {
+        case .notRunning:
+            return "\(player) isn't running. Open \(player) and start a track."
+        case .notAuthorized:
+            return "Studio One needs permission to control \(player). Grant it in System Settings › Privacy & Security › Automation."
+        case .notResponding:
+            return "\(player) isn't answering. If it's showing a dialog or sign-in window, close that."
+        case .scriptFailed(let detail):
+            return "\(player) didn't respond: \(detail)"
+        case .malformedResponse:
+            return "\(player) returned something unreadable."
+        }
+    }
+}
+
+/// What the app needs from a player, whichever one is followed. Both are
+/// driven over Apple Events (see `PlayerScripts`).
 protocol MusicPlayer: AnyObject, Sendable {
     var source: MusicSource { get }
 
-    /// Whether the player can be told to start a specific track by identifier.
-    /// Spotify can, via `play track "spotify:track:…"`; Music cannot usefully.
-    var supportsPlayingByID: Bool { get }
-
-    /// Async on purpose: the underlying Apple Event is synchronous and can take
-    /// tens of milliseconds — occasionally far more when the player app is busy.
-    /// Run on the main thread it blocks drawing, which shows up as stuttering
-    /// animation and a highlight that advances in steps instead of gliding.
-    func snapshot() async throws -> SpotifySnapshot
-
-    /// Async for the same reason, and run on the same serial queue as the
-    /// snapshot. These used to run on the main thread: the window froze until
-    /// the player answered, and the script ran alongside a snapshot on the
-    /// polling queue, which NSAppleScript does not allow.
+    /// Async, like everything here: an Apple Event can take from milliseconds
+    /// to seconds, and on the main thread it would stall drawing.
+    func snapshot() async throws -> PlayerSnapshot
     func playPause() async throws
     func next() async throws
     func previous() async throws
     func seek(to seconds: Double) async throws
-    func play(uri: String) async throws
     func activate()
 }
 
 extension Double {
-    /// A number AppleScript turned into text. It writes decimals the way the
-    /// Mac's region does — "213,5" in Germany or France — which `Double(_:)`
-    /// refuses, so every duration and position read as 0 and the lyrics never
-    /// moved. Verified by running the snapshot's coercion under de_DE.
+    /// A number AppleScript turned into text, which follows the Mac's region —
+    /// "213,5" in Germany or France, which `Double(_:)` refuses.
     init?(scripted text: String) {
         self.init(text.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: ",", with: "."))

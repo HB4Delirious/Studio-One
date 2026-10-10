@@ -55,7 +55,7 @@ struct LyricsTimingSheet: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Time the lyrics").font(.system(size: 16, weight: .semibold))
+                Text("Time the Lyrics").font(.system(size: 16, weight: .semibold))
                 Text(model.track.map { "\($0.name) — \($0.artist)" } ?? "Nothing playing")
                     .font(.system(size: 12)).foregroundStyle(Theme.upcoming).lineLimit(1)
             }
@@ -70,7 +70,7 @@ struct LyricsTimingSheet: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("One line of the song per line. Paste lyrics in if there were none. When you start, the song goes back to the beginning: press Space as each line starts to be sung.")
+            Text("When you start, the song goes back to the beginning: press Space as each line starts to be sung.")
                 .font(.system(size: 12)).foregroundStyle(Theme.upcoming)
                 .fixedSize(horizontal: false, vertical: true)
             TextEditor(text: $text)
@@ -78,9 +78,21 @@ struct LyricsTimingSheet: View {
                 .scrollContentBackground(.hidden)
                 .padding(6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.06)))
+                // Said where it's needed: in the empty box, not above it.
+                .overlay(alignment: .center) {
+                    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(spacing: 6) {
+                            Image(systemName: "text.badge.plus").font(.system(size: 22))
+                            Text("Paste the lyrics here, one line per line")
+                                .font(.system(size: 14, weight: .medium))
+                        }
+                        .foregroundStyle(Theme.upcoming)
+                        .allowsHitTesting(false)
+                    }
+                }
             HStack {
                 if model.lyricsTimedByYou {
-                    Button("Use LRCLIB's timing instead") {
+                    Button("Use LRCLIB's Timing Instead") {
                         model.discardTiming()
                         dismiss()
                     }
@@ -91,7 +103,7 @@ struct LyricsTimingSheet: View {
                 }
                 Spacer()
                 Text("\(parsedLines.count) lines").font(Theme.label).foregroundStyle(Theme.upcoming)
-                Button("Start from the top") { start() }
+                Button("Start from the Top") { start() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(parsedLines.isEmpty || model.track == nil)
             }
@@ -143,12 +155,13 @@ struct LyricsTimingSheet: View {
             .frame(maxWidth: .infinity, minHeight: 190)
 
             HStack(spacing: 10) {
-                Button("Undo  ⌫") { undo() }.disabled(taps.isEmpty)
-                Button("Break  G") { gap() }
+                Button { undo() } label: { KeyCapLabel("Undo", key: "⌫") }
+                    .disabled(taps.isEmpty)
+                Button { gap() } label: { KeyCapLabel("Break", key: "G") }
                     .help("An instrumental break: nothing is lit until the next line")
                 Spacer()
                 Button { tap() } label: {
-                    Text("Tap  ␣").frame(width: 120)
+                    KeyCapLabel("Tap", key: "space").frame(width: 140)
                 }
                 .controlSize(.large)
             }
@@ -192,7 +205,7 @@ struct LyricsTimingSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("All \(lines.count) lines timed.")
                 .font(.system(size: 18, weight: .semibold))
-            Text("Saved for this song only, and used ahead of LRCLIB from now on. Reload lyrics leaves it alone; to go back, open this again and choose LRCLIB's timing.")
+            Text("Saved for this song only, and used ahead of LRCLIB from now on. Reload Lyrics leaves it alone; to go back, open this again and choose LRCLIB's Timing Instead.")
                 .font(.system(size: 12)).foregroundStyle(Theme.upcoming)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Also share it on LRCLIB (public)", isOn: $alsoShare)
@@ -200,10 +213,10 @@ struct LyricsTimingSheet: View {
                 .help(shareExplanation)
             Spacer()
             HStack {
-                Button("Undo last tap") { undo() }
-                Button("Start over") { start() }
+                Button("Undo Last Tap") { undo() }
+                Button("Start Over") { start() }
                 Spacer()
-                Button(alsoShare ? "Save and share" : "Save") {
+                Button(alsoShare ? "Save and Share" : "Save") {
                     model.saveTiming(taps, thenShare: alsoShare)
                     dismiss()
                 }
@@ -220,5 +233,29 @@ struct LyricsTimingSheet: View {
     private static func clock(_ seconds: Double) -> String {
         let total = Int(max(0, seconds))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// A button's title with the key that does the same, drawn as a keycap
+/// rather than squeezed into the title.
+private struct KeyCapLabel: View {
+    let title: String
+    let key: String
+
+    init(_ title: String, key: String) {
+        self.title = title
+        self.key = key
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+            Text(key)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.35)))
+                .foregroundStyle(.white.opacity(0.75))
+        }
     }
 }

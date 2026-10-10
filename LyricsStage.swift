@@ -2,11 +2,9 @@ import SwiftUI
 
 /// How timed lyrics are shown. Chosen in Settings › Display.
 ///
-/// Highlighting and following are separate things here: the amber sweep, the
-/// lift of the word being sung and the swell on the beat are the highlighting;
-/// the line in the middle moving on with the song is the following. Some
-/// singers find the sweep a distraction but still want the words to keep up,
-/// and some want the whole song in front of them to read at their own pace.
+/// Highlighting (the amber sweep, the lifted word, the swell on the beat) and
+/// following (the line moving on with the song) are separate: some singers
+/// want the words to keep up without the sweep, some the whole song at once.
 enum LyricsStyle: String, CaseIterable, Identifiable {
     case highlight
     case follow
@@ -36,14 +34,29 @@ enum LyricsStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// The lyric text size, in points: set from the Controls window, the Stream
+/// Deck and the remote, and read by both lyric views.
+enum LyricSize {
+    static let key = "lyricFontSize"
+    static let standard: Double = 42
+    static let range: ClosedRange<Double> = 24...96
+
+    static var current: Double {
+        UserDefaults.standard.object(forKey: key) as? Double ?? standard
+    }
+
+    static func clamped(_ size: Double) -> Double {
+        min(range.upperBound, max(range.lowerBound, size))
+    }
+}
+
 /// Lyrics as a teleprompter push. The line being sung sits large in the middle
 /// with the next line smaller beneath it. When the line changes, the old line
 /// pans up and fades, the preview line rises into its place and grows to full
 /// size, and a new preview fades in beneath.
 ///
-/// The rise-and-grow only works because each line keeps its identity across the
-/// change — the middle line is not replaced, it is restyled, so SwiftUI animates
-/// its position and size instead of cross-fading two separate views.
+/// Each line keeps its identity across the change — restyled, not replaced —
+/// so SwiftUI animates its position and size rather than cross-fading.
 struct LyricsStage: View {
     let lines: [LyricLine]
     let position: Double
@@ -53,13 +66,17 @@ struct LyricsStage: View {
     let beatOffset: Double
     /// Off for `LyricsStyle.follow`: lines move on, words are never swept.
     var highlight: Bool = true
+    /// Finish the lyric: the first lead word to hide on a line, if any.
+    var mask: (LyricLine) -> Int? = { _ in nil }
+    /// A duet part's singer's mic level, 0…1, for its label to glow with.
+    var partLevel: (LyricPart?) -> Double = { _ in 0 }
     let onJump: (LyricLine) -> Void
 
     /// Each row's laid-out height, by line. See `slots(in:)`.
     @State private var heights: [Int: CGFloat] = [:]
 
-    /// 1 on the beat, decaying to roughly 0 by the next one. Uses the same grid
-    /// the background pulses on, so the lyrics and the field breathe together.
+    /// 1 on the beat, decaying towards 0 by the next — the grid the background
+    /// pulses on too.
     private var beatPulse: Double {
         guard let tempo, tempo >= 40, tempo <= 250 else { return 0 }
         let beat = 60.0 / tempo
@@ -68,23 +85,16 @@ struct LyricsStage: View {
         return exp(-4.0 * phase / beat)
     }
 
-    /// Line changes take half a beat — an eighth note — so the push lands in
-    /// time with the music.
-    ///
-    /// A full beat sounds right but measures wrong: clamped for readability it
-    /// came out at the ceiling for everything from 60 to 140 BPM, which is most
-    /// music, so every song moved identically. Half a beat spreads the range
-    /// where songs actually live.
+    /// Line changes take half a beat, so the push lands in time. (A whole
+    /// beat, clamped for readability, came out the same for most tempos.)
     private var transitionDuration: Double {
         guard let tempo, tempo >= 40, tempo <= 250 else { return 0.26 }
         return min(0.42, max(0.16, 30.0 / tempo))
     }
 
     var body: some View {
-        // Every row is laid out at the full font size and only *scaled* visually.
-        // Animating the real font size makes FlowLayout re-measure each frame, so
-        // words hop between wrapped rows mid-animation — that was the glitch.
-        // Slots are positioned explicitly so a scaled row can't disturb layout.
+        // Rows are laid out at full size and only scaled: animating the font
+        // size re-measures each frame and words hop between wrapped rows.
         GeometryReader { geo in
             let slot = slots(in: geo.size)
             ZStack {
@@ -101,16 +111,16 @@ struct LyricsStage: View {
                         isActive: entry.isActive,
                         fontSize: fontSize,
                         position: position,
-                        highlight: highlight)
+                        highlight: highlight,
+                        maskFrom: mask(entry.line),
+                        partLevel: entry.isActive ? partLevel(entry.line.part) : 0)
                         .frame(width: max(1, geo.size.width - 112))
-                        // Measured before the scale and position: this is the
-                        // height the row lays out at, which scaling never changes.
+                        // Before scaling, which never changes the laid-out height.
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
                             heights[entry.line.id] = height
                         }
-                        // The lead line swells a little on each beat; the
-                        // preview stays still so only one thing is moving.
-                        // Without highlighting nothing pulses at all.
+                        // Only the lead line swells on the beat, and only
+                        // with highlighting on.
                         .scaleEffect(entry.isActive ? 1 + (highlight ? 0.018 * beatPulse : 0) : 0.42,
                                      anchor: .center)
                         .position(x: geo.size.width / 2,
@@ -128,12 +138,9 @@ struct LyricsStage: View {
         }
     }
 
-    /// Where the two lines sit: 44% and 76% of the height, as always — unless
-    /// the line being sung is tall enough to reach the preview. A line that
-    /// wrapped to three rows ran down into the next line's preview and the two
-    /// were drawn over each other; seen live at the 80 pt size. The preview now
-    /// sits below the sung line's real bottom edge, and if that would take it
-    /// off the screen, both rise together without the sung line leaving the top.
+    /// Where the two lines sit: 44% and 76% of the height, unless the sung
+    /// line wraps far enough to reach the preview. Then the preview sits below
+    /// its real bottom edge, and if that runs off screen, both rise together.
     private func slots(in size: CGSize) -> (active: CGFloat, preview: CGFloat) {
         let entries = window
         let activeHeight = entries.first { $0.isActive }.flatMap { heights[$0.line.id] } ?? 0
@@ -153,9 +160,8 @@ struct LyricsStage: View {
         return (active, preview)
     }
 
-    /// The line being sung plus the one after it. Before the first line starts,
-    /// the opening line waits in the preview slot so it grows into place rather
-    /// than appearing from nothing.
+    /// The line being sung and the next. Before the first starts, it waits in
+    /// the preview slot, to grow into place rather than appear.
     private var window: [(line: LyricLine, isActive: Bool)] {
         guard !lines.isEmpty else { return [] }
 
@@ -163,10 +169,8 @@ struct LyricsStage: View {
             return lines.first(where: { $0.hasLead }).map { [($0, false)] } ?? []
         }
 
-        // A line that is entirely backing vocals has no lead to show — it floats
-        // as ghosts instead. Taking the lead slot blanked the display and pulled
-        // the preview line up early, which is why the next lyric appeared before
-        // it was sung.
+        // A line of backing vocals only has no lead, and floats as ghosts
+        // rather than taking the lead slot.
         let leadIndex = (0...activeIndex).reversed().first { lines[$0].hasLead }
         let nextIndex = lines.indices.first { $0 > activeIndex && lines[$0].hasLead }
 
@@ -189,6 +193,9 @@ private struct LyricRow: View {
     let fontSize: CGFloat
     let position: Double
     let highlight: Bool
+    /// Words from here on are blanks, for the singer to finish.
+    var maskFrom: Int?
+    var partLevel: Double = 0
 
     var body: some View {
         Group {
@@ -199,28 +206,35 @@ private struct LyricRow: View {
             }
         }
         .frame(maxWidth: .infinity)
+        // A duet's line says whose it is, above the words.
+        .overlay(alignment: .top) {
+            if isActive, let label = line.partLabel {
+                PartChip(label: label, color: Theme.part(line.part), fontSize: fontSize, level: partLevel)
+                    .alignmentGuide(.top) { $0[.bottom] + fontSize * 0.28 }
+            }
+        }
     }
 
     private var words: some View {
         let state = isActive && highlight ? line.wordState(at: position) : nil
-        // Unhighlighted, the line being sung is plain full white: dimmed like
-        // an upcoming line, it would read as not started yet, all the way through.
+        // Unhighlighted, the sung line is plain white — dimmed, it would read
+        // as not started.
         let base = isActive && !highlight ? 0.96 : 0.45
 
         return FlowLayout(spacing: fontSize * 0.30, lineSpacing: fontSize * 0.24) {
             ForEach(line.leadWords) { word in
-                // .equatable() so only the word actually being sung re-renders.
-                // Every other word's fill is a constant 0 or 1 from frame to
-                // frame, and re-rendering all of them at up to 120fps was most
-                // of the per-frame cost on this view.
-                WordView(text: word.text,
+                // .equatable(): only the word being sung changes from frame to
+                // frame, so only it re-renders.
+                WordView(text: maskFrom.map { word.id >= $0 } == true
+                            ? String(repeating: "_", count: max(3, word.text.count)) : word.text,
                          fill: Self.fill(for: word.id, state: state),
                          lift: fontSize * 0.055,
-                         base: base)
+                         base: base,
+                         sung: Theme.part(line.part))
                     .equatable()
             }
         }
-        .font(.system(size: fontSize, weight: .heavy, design: .rounded))
+        .font(.system(size: fontSize, weight: .heavy, design: Theme.stageDesign))
     }
 
     /// 1 once sung, the sweep fraction while being sung, 0 before.
@@ -236,10 +250,8 @@ private struct LyricRow: View {
 /// Backing vocals and ad-libs — the parts written in parentheses — drifting in
 /// around the lead line rather than crowding it.
 ///
-/// Placement is hashed from the line and phrase index rather than actually
-/// random: it has to be identical on every frame, or they would scatter anew
-/// sixty times a second. Positions avoid the middle band where the lead sits.
-/// The phrases themselves are grouped at parse time, not here.
+/// Placed by a hash of line and phrase rather than at random, so it's the
+/// same every frame, and kept out of the middle band where the lead sits.
 private struct GhostAsides: View {
     let line: LyricLine
     let position: Double
@@ -251,11 +263,10 @@ private struct GhostAsides: View {
             let spot = place(phrase.id)
             Text(phrase.text)
                 .font(.system(size: fontSize * 0.46 * spot.scale,
-                              weight: .medium, design: .rounded))
+                              weight: .medium, design: Theme.stageDesign))
                 .foregroundStyle(.white.opacity(0.34))
                 .rotationEffect(.degrees(spot.tilt))
-                // Drifts slightly larger across its life, so it breathes rather
-                // than sitting there like a pasted-on label.
+                // Grows slightly over its life, so it breathes.
                 .scaleEffect(growth(for: phrase))
                 .position(x: spot.x, y: spot.y)
                 .opacity(opacity(for: phrase))
@@ -301,22 +312,20 @@ private struct GhostAsides: View {
 
 /// One word of the line.
 ///
-/// Every phase renders the *same* view — a dim word with an amber copy overlaid
-/// and masked to `fill`. Branching on phase instead (bare Text when upcoming, a
-/// ZStack while singing) makes each word rebuild structurally twice per line,
-/// which re-measures the row and shifts it by fractions of a point. It also caps
-/// the sweep short: swapping to a flat amber Text at the moment the next word
-/// starts means the mask never visibly reaches the end of the word.
+/// The same view whatever the word's state — a dim word with an amber copy
+/// masked to `fill` — so a word is never rebuilt mid-line, which would
+/// re-measure the row and cut the sweep short.
 private struct WordView: View, Equatable {
     let text: String
     let fill: Double
     let lift: CGFloat
     /// Opacity of the unsung word.
     var base: Double = 0.45
+    /// The sweep's colour: a duet part's own.
+    var sung: Color = Theme.sung
 
-    /// Rises as the sweep crosses it and settles as it finishes — so each word
-    /// is picked out as it's sung, without the glow that made it look smeared.
-    /// A sine arch means it starts and ends exactly level, with no snap.
+    /// Rises as the sweep crosses the word and settles as it finishes: a sine
+    /// arch, level at both ends, so nothing snaps.
     private var rise: CGFloat {
         guard fill > 0, fill < 1 else { return 0 }
         return lift * CGFloat(sin(Double.pi * fill))
@@ -327,7 +336,7 @@ private struct WordView: View, Equatable {
             .foregroundStyle(.white.opacity(base))
             .overlay(alignment: .leading) {
                 Text(text)
-                    .foregroundStyle(Theme.sung)
+                    .foregroundStyle(sung)
                     // A single word never wraps, so the mask lines up with the
                     // glyphs exactly — this is where scaleEffect is precise.
                     .mask(alignment: .leading) {
@@ -339,9 +348,8 @@ private struct WordView: View, Equatable {
     }
 }
 
-/// Wraps words across rows and centres each row. Written against the `Layout`
-/// protocol rather than a GeometryReader — measurement happens during layout,
-/// so there is no second pass for the highlight to fall out of step with.
+/// Wraps words across rows and centres each row. A `Layout` rather than a
+/// GeometryReader, so there's no second pass for the highlight to lag.
 private struct FlowLayout: Layout {
     var spacing: CGFloat = 8
     var lineSpacing: CGFloat = 10
@@ -352,9 +360,8 @@ private struct FlowLayout: Layout {
         var height: CGFloat = 0
     }
 
-    /// SwiftUI calls sizeThatFits and placeSubviews back to back, and this view
-    /// rebuilds on every frame at up to 120fps. Measuring each word twice per
-    /// frame is wasted work, and re-measuring is where sub-point drift creeps in.
+    /// sizeThatFits and placeSubviews run back to back every frame; measuring
+    /// once saves the work and the sub-point drift of measuring twice.
     struct Cache {
         var width: CGFloat = -1
         var rows: [Row] = []
@@ -419,8 +426,8 @@ private struct FlowLayout: Layout {
     }
 }
 
-/// Blank LRC lines are instrumental gaps. A row that breathes beats a row that
-/// looks like the app has frozen.
+/// Blank LRC lines are instrumental gaps; a row that breathes shows the app
+/// hasn't frozen.
 private struct InstrumentalPulse: View {
     let progress: Double
 
@@ -437,8 +444,7 @@ private struct InstrumentalPulse: View {
     }
 }
 
-/// Fills the long gaps — intro, solo, outro — with a countdown to the next line
-/// so nobody is left staring at a still screen wondering if the app froze.
+/// A countdown to the next line through the long gaps — intro, solo, outro.
 struct CueCountdown: View {
     let secondsRemaining: Double
 
@@ -455,5 +461,28 @@ struct CueCountdown: View {
                     .animation(.easeOut(duration: 0.2), value: filled)
             }
         }
+    }
+}
+
+/// Whose line it is in a duet: the marker, in the part's colour.
+private struct PartChip: View {
+    let label: String
+    let color: Color
+    let fontSize: CGFloat
+    /// The part's singer's mic, 0…1: the chip glows as they sing.
+    var level: Double = 0
+
+    var body: some View {
+        HStack(spacing: fontSize * 0.12) {
+            Circle().fill(color).frame(width: fontSize * 0.2, height: fontSize * 0.2)
+            Text(label)
+                .font(.system(size: fontSize * 0.32, weight: .heavy, design: Theme.stageDesign))
+                .foregroundStyle(color)
+        }
+        .padding(.horizontal, fontSize * 0.22)
+        .padding(.vertical, fontSize * 0.08)
+        .background(Capsule().fill(color.opacity(0.16 + 0.3 * level)))
+        .shadow(color: color.opacity(0.9 * level), radius: fontSize * 0.25 * level)
+        .scaleEffect(1 + 0.08 * level)
     }
 }

@@ -5,11 +5,9 @@ import Foundation
 /// What was read out of an installed pitch plug-in: which controller value
 /// selects each root and each of Major and Minor, measured rather than assumed.
 ///
-/// Built because the menus cannot be known from outside. Waves' manual never
-/// lists its Scale menu, a saved project only shows the current position, and
-/// a root menu may list C♯ and D♭ as two entries — at which point "twelve
-/// equal steps" lands on the wrong key for most of them. The plug-in itself
-/// knows, so it is asked.
+/// The menus can't be known from outside — manuals don't list them, and a
+/// root menu may list C♯ and D♭ separately, breaking "twelve equal steps" —
+/// so the plug-in is asked.
 struct PluginReading: Codable, Equatable {
     let pluginName: String
     let rootParameter: String
@@ -68,9 +66,8 @@ enum PluginReaderError: LocalizedError {
 /// crashes on load takes only its helper down — and reads its key and scale.
 enum PluginReader {
 
-    /// Where to find each plug-in. The component codes come from the karaoke
-    /// Logic project, which records them for every plug-in it uses; the names
-    /// are the fallback for anything whose codes aren't known.
+    /// Each plug-in's component codes (from a Logic project that uses it), with
+    /// its name as the fallback.
     static func target(for plugin: PitchPlugin) -> (manufacturer: String?, subtype: String?, name: String)? {
         switch plugin {
         case .wavesTuneRealTime:    return ("ksWV", "LVLS", "Waves Tune Real-Time")
