@@ -1,0 +1,397 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Studio One",
+  "Version": "1.1.0.0",
+  "Author": "Studio One",
+  "Description": "Control the Studio One karaoke app: play, skip, key and tempo for Logic, lyric sync, volume, and the lyrics display.",
+  "UUID": "com.logan.studioone",
+  "Icon": "imgs/plugin",
+  "Category": "Studio One",
+  "CategoryIcon": "imgs/category",
+  "CodePath": "bin/StudioOneDeck",
+  "CodePathMac": "bin/StudioOneDeck",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.4"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "13"
+    }
+  ],
+  "Actions": [
+    {
+      "UUID": "com.logan.studioone.playpause",
+      "Name": "Play / Pause",
+      "Icon": "imgs/actions/playpause",
+      "Tooltip": "Play or pause what Studio One is following",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/play",
+          "ShowTitle": false
+        },
+        {
+          "Image": "imgs/keys/pause",
+          "ShowTitle": false
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.next",
+      "Name": "Next Track",
+      "Icon": "imgs/actions/next",
+      "Tooltip": "Skip to the next song",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/next",
+          "ShowTitle": false
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.previous",
+      "Name": "Previous Track",
+      "Icon": "imgs/actions/previous",
+      "Tooltip": "Back to the previous song",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/previous",
+          "ShowTitle": false
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.fadeout",
+      "Name": "Fade Out",
+      "Icon": "imgs/actions/fadeout",
+      "Tooltip": "Fade the song out, then on to the break or the next song",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/fadeout",
+          "ShowTitle": false
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.nowplaying",
+      "Name": "Now Playing",
+      "Icon": "imgs/actions/nowplaying",
+      "Tooltip": "Shows the album art. Press to open the lyrics window.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/nowplaying",
+          "ShowTitle": true,
+          "FontSize": 11,
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.keybpm",
+      "Name": "Key & BPM",
+      "Icon": "imgs/actions/keybpm",
+      "Tooltip": "Shows the key and tempo. Press to send the key to Logic.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/keybpm",
+          "ShowTitle": true,
+          "FontSize": 15,
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.lyricsfull",
+      "Name": "Lyrics Full Screen",
+      "Icon": "imgs/actions/lyricsfull",
+      "Tooltip": "Put the lyrics window full screen, or take it back",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/lyricsfull",
+          "ShowTitle": false
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.source",
+      "Name": "Switch Source",
+      "Icon": "imgs/actions/source",
+      "Tooltip": "Switch between Spotify and Apple Music",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/source",
+          "ShowTitle": true,
+          "FontSize": 13,
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.reload",
+      "Name": "Reload Lyrics",
+      "Icon": "imgs/actions/reload",
+      "Tooltip": "Look the lyrics up again",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/keys/reload",
+          "ShowTitle": false
+        }
+      ],
+      "SupportedInMultiActions": true
+    },
+    {
+      "UUID": "com.logan.studioone.dial.key",
+      "Name": "Key",
+      "Icon": "imgs/actions/dial-key",
+      "Tooltip": "Transpose the key sent to Logic",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/key"
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "Icon": "imgs/dials/key",
+        "TriggerDescription": {
+          "Rotate": "Transpose ±1 semitone",
+          "Push": "Back to the detected key",
+          "Touch": "Send key to Logic"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.dial.tempo",
+      "Name": "Tempo",
+      "Icon": "imgs/actions/dial-tempo",
+      "Tooltip": "Correct the tempo sent to Logic",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/tempo"
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "Icon": "imgs/dials/tempo",
+        "TriggerDescription": {
+          "Rotate": "±1 BPM",
+          "Push": "Reset tempo",
+          "Touch": "Tap ×2, hold ÷2"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.dial.sync",
+      "Name": "Lyric Sync",
+      "Icon": "imgs/actions/dial-sync",
+      "Tooltip": "Move the lyrics earlier or later, or tap the strip as a line starts",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/sync"
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "Icon": "imgs/dials/sync",
+        "TriggerDescription": {
+          "Rotate": "±50 ms",
+          "Push": "Reset sync",
+          "Touch": "Tap as a line starts to sync; hold to reload"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.dial.volume",
+      "Name": "Volume",
+      "Icon": "imgs/actions/dial-volume",
+      "Tooltip": "Player volume",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/volume"
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "Icon": "imgs/dials/volume",
+        "TriggerDescription": {
+          "Rotate": "±2",
+          "Push": "Mute / unmute"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.dial.seek",
+      "Name": "Seek",
+      "Icon": "imgs/actions/dial-seek",
+      "Tooltip": "Scrub through the song",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/seek"
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "Icon": "imgs/dials/seek",
+        "TriggerDescription": {
+          "Rotate": "±5 seconds",
+          "Push": "Play / pause",
+          "Touch": "Tap next, hold previous"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.dial.font",
+      "Name": "Lyric Size",
+      "Icon": "imgs/actions/dial-font",
+      "Tooltip": "Size of the lyrics on screen",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/font"
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "Icon": "imgs/dials/font",
+        "TriggerDescription": {
+          "Rotate": "±2 pt",
+          "Push": "Back to default"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.logic.mixer",
+      "Name": "Logic Mic Dial",
+      "Icon": "imgs/actions/dial-mixer",
+      "Tooltip": "Turn to nudge a mic channel in Logic. Choose which control in this action's settings.",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/mixer"
+        }
+      ],
+      "PropertyInspectorPath": "pi/control.html",
+      "Encoder": {
+        "layout": "$A1",
+        "Icon": "imgs/dials/mixer",
+        "TriggerDescription": {
+          "Rotate": "Nudge the chosen control",
+          "Push": "Mute that mic"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.logic.mute",
+      "Name": "Logic Mic Mute",
+      "Icon": "imgs/actions/mute",
+      "Tooltip": "Mute or unmute a mic channel in Logic.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "pi/control.html",
+      "States": [
+        {
+          "Image": "imgs/keys/mute",
+          "ShowTitle": true,
+          "FontSize": 13,
+          "TitleAlignment": "bottom"
+        }
+      ]
+    },
+    {
+      "UUID": "com.logan.studioone.midi.dial",
+      "Name": "MIDI Dial",
+      "Icon": "imgs/actions/dial-midi",
+      "Tooltip": "Turn to send any controller message to Logic. Works with Studio One closed.",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/dials/midi"
+        }
+      ],
+      "PropertyInspectorPath": "pi/midi.html",
+      "Encoder": {
+        "layout": "$A1",
+        "Icon": "imgs/dials/midi",
+        "TriggerDescription": {
+          "Rotate": "Send the controller",
+          "Push": "Send it at 127"
+        }
+      }
+    },
+    {
+      "UUID": "com.logan.studioone.midi.key",
+      "Name": "MIDI Button",
+      "Icon": "imgs/actions/midi-key",
+      "Tooltip": "Send one controller message to Logic. Works with Studio One closed.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "pi/midi.html",
+      "States": [
+        {
+          "Image": "imgs/keys/midi",
+          "ShowTitle": true,
+          "FontSize": 13,
+          "TitleAlignment": "bottom"
+        }
+      ]
+    }
+  ]
+}

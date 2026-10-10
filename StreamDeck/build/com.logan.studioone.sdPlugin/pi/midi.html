@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MIDI</title>
+<style>
+  body { font: 13px -apple-system, system-ui, sans-serif; color: #d8d8d8;
+         background: #2d2d2d; margin: 0; padding: 14px; }
+  .row { display: flex; align-items: center; margin-bottom: 9px; }
+  label { width: 92px; color: #969696; flex: none; }
+  input, select { flex: 1; padding: 5px; font-size: 13px; background: #3d3d3d;
+                  color: #d8d8d8; border: 1px solid #545454; border-radius: 4px; }
+  p { color: #8f8f8f; line-height: 1.45; margin: 12px 0 0; }
+</style>
+</head>
+<body>
+  <div class="row"><label for="label">Name</label><input id="label" placeholder="Reverb send"></div>
+  <div class="row"><label for="cc">Controller</label><input id="cc" type="number" min="0" max="127" value="30"></div>
+  <div class="row"><label for="channel">Channel</label><input id="channel" type="number" min="1" max="16" value="16"></div>
+  <div class="row" id="modeRow"><label for="mode">Turning</label>
+    <select id="mode">
+      <option value="relative">Nudges (Logic: Mode Relative)</option>
+      <option value="absolute">Sets a value 0–127 (Mode Scaled)</option>
+    </select>
+  </div>
+  <div class="row" id="stepRow"><label for="step">Per click</label><input id="step" type="number" min="1" max="20" value="1"></div>
+  <div class="row" id="valueRow"><label for="value">Sends</label><input id="value" type="number" min="0" max="127" value="127"></div>
+  <p id="hint"></p>
+
+<script>
+let socket, uuid, actionUUID, settings = {}, isKey = false;
+
+function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+  uuid = inUUID;
+  const action = JSON.parse(actionInfo);
+  actionUUID = action.action;
+  isKey = actionUUID.endsWith(".key");
+  settings = action.payload.settings || {};
+
+  socket = new WebSocket("ws://127.0.0.1:" + port);
+  socket.onopen = () => socket.send(JSON.stringify({ event: registerEvent, uuid }));
+  setUp();
+}
+
+function setUp() {
+  // A button sends one value; a dial turns, so it asks how.
+  document.getElementById("modeRow").style.display = isKey ? "none" : "flex";
+  document.getElementById("stepRow").style.display = isKey ? "none" : "flex";
+  document.getElementById("valueRow").style.display = isKey ? "flex" : "none";
+  document.getElementById("hint").textContent = isKey
+    ? "Learn it in Logic with this key held down, or press it while Learn Mode is on. Mode: Toggle suits a mute."
+    : "Learn it in Logic while turning this dial. Nudges need Mode: Relative in Expert view; a value needs Mode: Scaled.";
+
+  for (const id of ["label", "cc", "channel", "mode", "step", "value"]) {
+    const field = document.getElementById(id);
+    if (settings[id] !== undefined) field.value = settings[id];
+    // As you type, not only on leaving the field: "change" waits for the
+    // field to lose focus, and closing the panel straight after typing a
+    // controller number could drop it.
+    field.oninput = save;
+    field.onchange = save;
+  }
+}
+
+function save() {
+  const number = (id, fallback) => {
+    const value = parseInt(document.getElementById(id).value, 10);
+    return isNaN(value) ? fallback : value;
+  };
+  settings = {
+    label: document.getElementById("label").value || undefined,
+    cc: Math.max(0, Math.min(127, number("cc", 30))),
+    channel: Math.max(1, Math.min(16, number("channel", 16))),
+    mode: document.getElementById("mode").value,
+    step: Math.max(1, Math.min(20, number("step", 1))),
+    value: Math.max(0, Math.min(127, number("value", 127))),
+  };
+  socket.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+}
+</script>
+</body>
+</html>

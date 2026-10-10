@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Studio One</title>
+<style>
+  /* Plain CSS rather than Elgato's component library: nothing to download,
+     and the panel is one menu. */
+  body { font: 13px -apple-system, system-ui, sans-serif; color: #d8d8d8;
+         background: #2d2d2d; margin: 0; padding: 14px; }
+  label { display: block; margin-bottom: 6px; color: #969696; }
+  select { width: 100%; padding: 5px; font-size: 13px; background: #3d3d3d;
+           color: #d8d8d8; border: 1px solid #545454; border-radius: 4px; }
+  p { color: #8f8f8f; line-height: 1.45; margin: 12px 0 0; }
+  code { color: #c8c8c8; }
+</style>
+</head>
+<body>
+  <label for="control">Control in Logic</label>
+  <select id="control"><option value="">Studio One isn't running</option></select>
+  <p id="hint">Learn it once in Logic: Controller Assignments (⌥⇧K), aim it at that
+     mic's channel strip. The controller number is shown in Studio One's
+     Settings › Mixer &amp; songs.</p>
+
+<script>
+let socket, uuid, actionUUID, settings = {};
+
+// Stream Deck calls this when the panel opens.
+function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+  uuid = inUUID;
+  const action = JSON.parse(actionInfo);
+  actionUUID = action.action;
+  settings = action.payload.settings || {};
+
+  socket = new WebSocket("ws://127.0.0.1:" + port);
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ event: registerEvent, uuid }));
+    // Ask the plug-in for the list; it gets it from Studio One.
+    send("sendToPlugin", { request: "controls" });
+  };
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.event === "sendToPropertyInspector" && message.payload.controls) {
+      fill(message.payload.controls);
+    }
+  };
+}
+
+function send(event, payload) {
+  socket.send(JSON.stringify({ event, context: uuid, action: actionUUID, payload }));
+}
+
+function fill(controls) {
+  // A dial drives the things you turn; the key drives the ones you press.
+  const wanted = actionUUID.endsWith(".mute") ? "button" : "dial";
+  window.controlList = controls;
+  const list = controls.filter((c) => c.kind === wanted);
+  const menu = document.getElementById("control");
+  menu.innerHTML = "";
+
+  if (!list.length) {
+    menu.innerHTML = '<option value="">Nothing to choose — is Studio One running?</option>';
+    return;
+  }
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "Choose…";
+  menu.appendChild(none);
+
+  for (const control of list) {
+    const option = document.createElement("option");
+    option.value = control.id;
+    option.textContent = control.name + "  (CC " + control.cc + ")";
+    option.selected = control.id === settings.control;
+    menu.appendChild(option);
+  }
+  menu.onchange = () => {
+    const chosen = list.find((c) => c.id === menu.value);
+    if (!chosen) { settings = {}; send("setSettings", settings); return; }
+    // The controller number and channel are saved with the action, not looked
+    // up each time: that way the dial still sends the right message when
+    // Studio One isn't running.
+    settings = { control: chosen.id, name: chosen.name, cc: chosen.cc, channel: chosen.channel || 16 };
+    if (wanted === "dial") {
+      // Pressing a dial mutes its own mic, so its number is saved too.
+      const mute = window.controlList.find((c) => c.kind === "button" && c.mic === chosen.mic);
+      if (mute) { settings.muteCC = mute.cc; settings.muteName = mute.name; }
+    }
+    send("setSettings", settings);
+  };
+}
+</script>
+</body>
+</html>
